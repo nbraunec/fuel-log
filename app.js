@@ -2,12 +2,64 @@
 const { useState, useEffect, useRef, useCallback } = React;
 const h = React.createElement;
 
-// ── STORAGE ──────────────────────────────────────────────────────────────────
-const STORAGE_KEY = 'fuellog_v1';
-function loadData() {
-  try { const raw = localStorage.getItem(STORAGE_KEY); if (raw) return migrate(JSON.parse(raw)); } catch (e) {}
-  return { vehicles: ['My Vehicle'], entries: [], activeVehicle: 'My Vehicle' };
+// ── SUPABASE ──────────────────────────────────────────────────────────────────
+const SUPABASE_URL = 'https://jhrqdgylshubhdaegyri.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpocnFkZ3lsc2h1YmhkYWVneXJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0MjA5MzgsImV4cCI6MjA5Nzk5NjkzOH0.ZJFeJV5jGMf8lZTiojTu4YOGeWVDfMqHJJM6Q1KlqVE';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ── MAPPERS ───────────────────────────────────────────────────────────────────
+function toSb(entry, mpg) {
+  return {
+    id: entry.id,
+    vehicle: entry.vehicle,
+    date: entry.date,
+    trip_miles: entry.tripMiles,
+    total_miles: entry.totalMiles,
+    gallons: entry.gallons,
+    price_per_gallon: entry.pricePerGallon,
+    total_price: entry.totalPrice,
+    fuel_type: entry.fuelType,
+    partial: !!entry.partial,
+    mpg: mpg != null ? mpg : null
+  };
 }
+function fromSb(row) {
+  return {
+    id: row.id,
+    vehicle: row.vehicle,
+    date: row.date,
+    tripMiles: row.trip_miles,
+    totalMiles: row.total_miles,
+    gallons: row.gallons,
+    pricePerGallon: row.price_per_gallon,
+    totalPrice: row.total_price,
+    fuelType: row.fuel_type || '',
+    partial: !!row.partial
+  };
+}
+
+// ── STORAGE ───────────────────────────────────────────────────────────────────
+const PREFS_KEY   = 'fuellog_prefs';
+const CACHE_KEY   = 'fuellog_cache';
+const PENDING_KEY = 'fuellog_pending';
+const LEGACY_KEY  = 'fuellog_v1';
+
+function loadPrefs() {
+  try { const r = localStorage.getItem(PREFS_KEY); if (r) return JSON.parse(r); } catch (e) {}
+  // fall back to legacy format so existing installs keep their vehicle names
+  try {
+    const r = localStorage.getItem(LEGACY_KEY);
+    if (r) { const d = JSON.parse(r); return { vehicles: d.vehicles || ['My Vehicle'], activeVehicle: d.activeVehicle || 'My Vehicle' }; }
+  } catch (e) {}
+  return { vehicles: ['My Vehicle'], activeVehicle: 'My Vehicle' };
+}
+function savePrefs(prefs) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) {} }
+function loadCache() { try { const r = localStorage.getItem(CACHE_KEY); if (r) return JSON.parse(r); } catch (e) {} return []; }
+function saveCache(entries) { try { localStorage.setItem(CACHE_KEY, JSON.stringify(entries)); } catch (e) {} }
+function loadPending() { try { const r = localStorage.getItem(PENDING_KEY); if (r) return JSON.parse(r); } catch (e) {} return []; }
+function savePending(ops) { try { localStorage.setItem(PENDING_KEY, JSON.stringify(ops)); } catch (e) {} }
+function addPending(op) { const ops = loadPending(); ops.push(op); savePending(ops); }
+
 function migrate(data) {
   if (data && data.entries) {
     data.entries.forEach(function(e){
@@ -17,11 +69,10 @@ function migrate(data) {
   }
   return data;
 }
-function saveData(data) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) {} }
 
 // ── FUEL TYPES ───────────────────────────────────────────────────────────────
 const FUEL_TYPES = [
-  { value: '', label: '\u2014' },
+  { value: '', label: '—' },
   { value: 'reg87', label: 'Regular 87' },
   { value: 'mid89', label: 'Midgrade 89' },
   { value: 'prem91', label: 'Premium 91' },
@@ -32,7 +83,7 @@ const FUEL_TYPES = [
 ];
 function fuelLabel(v) {
   const f = FUEL_TYPES.find(function(t){return t.value === v;});
-  return f ? f.label : '\u2014';
+  return f ? f.label : '—';
 }
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -44,11 +95,11 @@ function mpgColor(mpg) {
 }
 function fmt(n, dec) {
   if (dec === undefined) dec = 2;
-  if (n === null || n === undefined || isNaN(n)) return '\u2014';
+  if (n === null || n === undefined || isNaN(n)) return '—';
   return Number(n).toFixed(dec);
 }
 function fmtDate(iso) {
-  if (!iso) return '\u2014';
+  if (!iso) return '—';
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 }
@@ -182,7 +233,7 @@ function AddEntryForm(props) {
     );
   }
   return h('div', { className: 'card' },
-    h('div', { className: 'card-title' }, 'Log Fill-Up \u2014 ' + props.vehicle),
+    h('div', { className: 'card-title' }, 'Log Fill-Up — ' + props.vehicle),
     h('div', { className: 'form-grid' },
       h('div', { className: 'form-group' },
         h('label', null, 'Date'),
@@ -250,17 +301,17 @@ function Dashboard(props) {
   }
   return h(React.Fragment, null,
     h('div', { className: 'card' },
-      h('div', { className: 'card-title' }, 'Summary \u2014 ' + props.vehicle),
+      h('div', { className: 'card-title' }, 'Summary — ' + props.vehicle),
       h('div', { className: 'stat-grid' },
         statCell('Avg MPG', fmt(avgMpg), avgMpg ? mpgColor(avgMpg) : '', 'mi / gal'),
         statCell('Best MPG', fmt(bestMpg), 'green', 'all time'),
-        statCell('Total Miles', totalMiles > 0 ? Math.round(totalMiles).toLocaleString() : '\u2014', 'accent', 'logged'),
-        statCell('Total Spent', totalSpent > 0 ? '$' + fmt(totalSpent) : '\u2014', '', 'on fuel'),
-        statCell('Cost / Mile', costPerMile ? '$' + fmt(costPerMile, 3) : '\u2014', '', 'avg'),
+        statCell('Total Miles', totalMiles > 0 ? Math.round(totalMiles).toLocaleString() : '—', 'accent', 'logged'),
+        statCell('Total Spent', totalSpent > 0 ? '$' + fmt(totalSpent) : '—', '', 'on fuel'),
+        statCell('Cost / Mile', costPerMile ? '$' + fmt(costPerMile, 3) : '—', '', 'avg'),
         statCell('Fill-Ups', String(fillCount), '', 'total')
       ),
       trendUp !== null ? h('div', { style: { marginTop: 10, fontSize: 12, color: trendUp ? 'var(--green)' : 'var(--red)', fontFamily: 'var(--mono)' } },
-        (trendUp ? '\u2191' : '\u2193') + ' Recent avg ' + fmt(recent5avg) + ' mpg vs ' + fmt(avgMpg) + ' mpg lifetime'
+        (trendUp ? '↑' : '↓') + ' Recent avg ' + fmt(recent5avg) + ' mpg vs ' + fmt(avgMpg) + ' mpg lifetime'
       ) : null
     ),
     h('div', { className: 'card' },
@@ -281,9 +332,9 @@ function Dashboard(props) {
               h('td', null, fmtDate(e.date), e.partial ? h('span', { className: 'partial-tag' }, 'P') : null),
               h('td', null, fmt(e.tripMiles, 1)),
               h('td', null, fmt(e.gallons, 3)),
-              h('td', null, e.pricePerGallon ? '$' + fmt(e.pricePerGallon) : '\u2014'),
-              h('td', null, e.totalPrice ? '$' + fmt(e.totalPrice) : '\u2014'),
-              h('td', { className: 'mpg-cell ' + mpgColor(e.mpg) }, e.partial ? '\u2014' : fmt(e.mpg))
+              h('td', null, e.pricePerGallon ? '$' + fmt(e.pricePerGallon) : '—'),
+              h('td', null, e.totalPrice ? '$' + fmt(e.totalPrice) : '—'),
+              h('td', { className: 'mpg-cell ' + mpgColor(e.mpg) }, e.partial ? '—' : fmt(e.mpg))
             );
           }))
         )
@@ -311,14 +362,14 @@ function Monthly(props) {
   });
   if (months.length === 0) {
     return h('div', { className: 'card' },
-      h('div', { className: 'card-title' }, 'Monthly Breakdown \u2014 ' + props.vehicle),
+      h('div', { className: 'card-title' }, 'Monthly Breakdown — ' + props.vehicle),
       h('div', { className: 'no-data' }, 'No fill-ups logged yet')
     );
   }
   const monthsDesc = months.slice().reverse();
   return h(React.Fragment, null,
     h('div', { className: 'card' },
-      h('div', { className: 'card-title' }, 'Spend / Month (last 6) \u2014 ' + props.vehicle),
+      h('div', { className: 'card-title' }, 'Spend / Month (last 6) — ' + props.vehicle),
       h(BarChart, { rows: recentMonths })
     ),
     h('div', { className: 'card' },
@@ -337,7 +388,7 @@ function Monthly(props) {
               h('td', null, fmt(m.gallons, 2)),
               h('td', null, Math.round(m.miles).toLocaleString()),
               h('td', null, '$' + fmt(m.spent)),
-              h('td', null, cpm ? '$' + fmt(cpm, 3) : '\u2014')
+              h('td', null, cpm ? '$' + fmt(cpm, 3) : '—')
             );
           }))
         )
@@ -350,7 +401,7 @@ function Monthly(props) {
 function History(props) {
   const ve = props.entries.filter(function(e){return e.vehicle === props.vehicle;}).sort(function(a,b){return b.date.localeCompare(a.date);});
   return h('div', { className: 'card' },
-    h('div', { className: 'card-title' }, 'All Fill-Ups \u2014 ' + props.vehicle + ' (' + ve.length + ')'),
+    h('div', { className: 'card-title' }, 'All Fill-Ups — ' + props.vehicle + ' (' + ve.length + ')'),
     ve.length === 0 ? h('div', { className: 'no-data' }, 'No fill-ups logged yet') :
     h('div', { style: { overflowX: 'auto' } },
       h('table', { className: 'history-table' },
@@ -362,13 +413,13 @@ function History(props) {
           return h('tr', { key: e.id },
             h('td', null, fmtDate(e.date), e.partial ? h('span', { className: 'partial-tag' }, 'P') : null),
             h('td', null, fmt(e.tripMiles, 1)),
-            h('td', null, e.totalMiles ? Math.round(e.totalMiles).toLocaleString() : '\u2014'),
+            h('td', null, e.totalMiles ? Math.round(e.totalMiles).toLocaleString() : '—'),
             h('td', null, fmt(e.gallons, 3)),
-            h('td', null, e.pricePerGallon ? '$' + fmt(e.pricePerGallon) : '\u2014'),
-            h('td', null, e.totalPrice ? '$' + fmt(e.totalPrice) : '\u2014'),
-            h('td', { style: { fontSize: 10, color: 'var(--text-muted)' } }, e.fuelType ? fuelLabel(e.fuelType) : '\u2014'),
-            h('td', { className: 'mpg-cell ' + mpgColor(e.mpg) }, e.partial ? '\u2014' : fmt(e.mpg)),
-            h('td', null, h('button', { className: 'delete-btn', onClick: function(){ props.onDelete(e.id); }, title: 'Delete' }, '\u00d7'))
+            h('td', null, e.pricePerGallon ? '$' + fmt(e.pricePerGallon) : '—'),
+            h('td', null, e.totalPrice ? '$' + fmt(e.totalPrice) : '—'),
+            h('td', { style: { fontSize: 10, color: 'var(--text-muted)' } }, e.fuelType ? fuelLabel(e.fuelType) : '—'),
+            h('td', { className: 'mpg-cell ' + mpgColor(e.mpg) }, e.partial ? '—' : fmt(e.mpg)),
+            h('td', null, h('button', { className: 'delete-btn', onClick: function(){ props.onDelete(e.id); }, title: 'Delete' }, '×'))
           );
         }))
       )
@@ -419,7 +470,7 @@ function Settings(props) {
     reader.onload = function(ev){
       try {
         const imported = JSON.parse(ev.target.result);
-        if (imported.vehicles && imported.entries) { props.onUpdate(migrate(imported)); alert('Data imported successfully.'); }
+        if (imported.vehicles && imported.entries) { props.onImport(migrate(imported)); }
         else alert('Invalid file format.');
       } catch (err) { alert('Could not parse file.'); }
     };
@@ -427,20 +478,23 @@ function Settings(props) {
   }
   function handleClearVehicle(vehicle) {
     if (!confirm('Delete ALL entries for "' + vehicle + '"? This cannot be undone.')) return;
-    props.onUpdate(function(prev){ return Object.assign({}, prev, { entries: prev.entries.filter(function(e){return e.vehicle !== vehicle;}) }); });
+    props.onClearVehicle(vehicle);
   }
   function handleRemoveVehicle(vehicle) {
     if (!confirm('Remove vehicle "' + vehicle + '" and all its data?')) return;
-    props.onUpdate(function(prev){
-      const remaining = prev.vehicles.filter(function(v){return v !== vehicle;});
-      return Object.assign({}, prev, {
-        vehicles: remaining,
-        entries: prev.entries.filter(function(e){return e.vehicle !== vehicle;}),
-        activeVehicle: remaining[0] || 'My Vehicle'
-      });
-    });
+    props.onRemoveVehicle(vehicle);
   }
   return h('div', { className: 'card' },
+    h('div', { className: 'settings-section' },
+      h('div', { className: 'settings-title' }, 'Cloud Sync'),
+      h('div', { className: 'setting-row' },
+        h('div', null,
+          h('div', { className: 'setting-label' }, 'Migrate local data'),
+          h('div', { className: 'setting-sub' }, 'Push any locally-stored entries to Supabase')
+        ),
+        h('button', { className: 'btn btn-ghost', onClick: props.onMigrate }, 'Migrate')
+      )
+    ),
     h('div', { className: 'settings-section' },
       h('div', { className: 'settings-title' }, 'Data'),
       h('div', { className: 'setting-row' },
@@ -453,7 +507,7 @@ function Settings(props) {
       h('div', { className: 'setting-row' },
         h('div', null,
           h('div', { className: 'setting-label' }, 'Export CSV'),
-          h('div', { className: 'setting-sub' }, 'For Excel \u2014 all columns, all vehicles')
+          h('div', { className: 'setting-sub' }, 'For Excel — all columns, all vehicles')
         ),
         h('button', { className: 'btn btn-ghost', onClick: handleExportCSV }, 'Export')
       ),
@@ -483,7 +537,7 @@ function Settings(props) {
       })
     ),
     h('div', { style: { marginTop: 8, fontSize: 12, color: 'var(--text-dim)', fontFamily: 'var(--mono)' } },
-      data.entries.length + ' total entries \u00b7 stored locally in browser'
+      data.entries.length + ' total entries · synced via Supabase'
     )
   );
 }
@@ -511,23 +565,176 @@ function AddVehicleModal(props) {
 
 // ── APP ───────────────────────────────────────────────────────────────────────
 function App() {
-  const ds = useState(loadData); const data = ds[0], setData = ds[1];
-  const ts = useState('dashboard'); const tab = ts[0], setTab = ts[1];
-  const vs = useState(false); const showAddVehicle = vs[0], setShowAddVehicle = vs[1];
-  const activeVehicle = data.activeVehicle || data.vehicles[0];
-  useEffect(function(){ saveData(data); }, [data]);
-  const mpgMap = computeMpg(data.entries);
-  const entriesWithMpg = data.entries.map(function(e){ return Object.assign({}, e, { mpg: mpgMap[e.id] }); });
-  const updateData = useCallback(function(updater){
-    setData(function(prev){ return typeof updater === 'function' ? updater(prev) : updater; });
+  const [entries, setEntries] = useState(loadCache);
+  const [vehicles, setVehicles] = useState(function(){ return loadPrefs().vehicles || ['My Vehicle']; });
+  const [activeVehicle, setActiveVehicle] = useState(function(){ const p = loadPrefs(); return p.activeVehicle || (p.vehicles || ['My Vehicle'])[0]; });
+  const [tab, setTab] = useState('dashboard');
+  const [showAddVehicle, setShowAddVehicle] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('syncing');
+
+  // keep a ref so async callbacks always see current entries without stale closure
+  const entriesRef = useRef(entries);
+  useEffect(function(){ entriesRef.current = entries; }, [entries]);
+
+  useEffect(function(){
+    savePrefs({ vehicles: vehicles, activeVehicle: activeVehicle });
+  }, [vehicles, activeVehicle]);
+
+  useEffect(function(){
+    loadFromSupabase();
+    window.addEventListener('online', handleOnline);
+    return function(){ window.removeEventListener('online', handleOnline); };
   }, []);
-  function setActiveVehicle(v){ updateData(function(prev){ return Object.assign({}, prev, { activeVehicle: v }); }); }
-  function handleAddEntry(entry){ updateData(function(prev){ return Object.assign({}, prev, { entries: [entry].concat(prev.entries) }); }); }
-  function handleDeleteEntry(id){ if (!confirm('Delete this entry?')) return; updateData(function(prev){ return Object.assign({}, prev, { entries: prev.entries.filter(function(e){return e.id !== id;}) }); }); }
-  function handleAddVehicle(name){
-    if (data.vehicles.indexOf(name) !== -1) { alert('Vehicle already exists.'); return; }
-    updateData(function(prev){ return Object.assign({}, prev, { vehicles: prev.vehicles.concat([name]), activeVehicle: name }); });
+
+  function loadFromSupabase() {
+    setSyncStatus('syncing');
+    return sb.from('fill_ups').select('*').then(function(res){
+      if (res.error) throw res.error;
+      const mapped = res.data.map(fromSb);
+      setEntries(mapped);
+      saveCache(mapped);
+      setSyncStatus('synced');
+    }).catch(function(){
+      setEntries(loadCache());
+      setSyncStatus('offline');
+    });
   }
+
+  function handleOnline() {
+    const pending = loadPending();
+    if (!pending.length) { loadFromSupabase(); return; }
+    setSyncStatus('syncing');
+    const failed = [];
+    let chain = Promise.resolve();
+    pending.forEach(function(op){
+      chain = chain.then(function(){
+        if (op.op === 'insert') {
+          return sb.from('fill_ups').upsert(toSb(op.entry, op.mpg)).then(function(r){ if (r.error) throw r.error; });
+        } else if (op.op === 'delete') {
+          return sb.from('fill_ups').delete().eq('id', op.id).then(function(r){ if (r.error) throw r.error; });
+        } else if (op.op === 'deleteVehicle') {
+          return sb.from('fill_ups').delete().eq('vehicle', op.vehicle).then(function(r){ if (r.error) throw r.error; });
+        }
+      }).catch(function(){ failed.push(op); });
+    });
+    chain.then(function(){ savePending(failed); loadFromSupabase(); });
+  }
+
+  const mpgMap = computeMpg(entries);
+  const entriesWithMpg = entries.map(function(e){ return Object.assign({}, e, { mpg: mpgMap[e.id] }); });
+
+  function handleAddEntry(entry) {
+    const cur = entriesRef.current;
+    const newEntries = [entry].concat(cur);
+    const mpg = computeMpg(newEntries)[entry.id];
+    setEntries(newEntries);
+    saveCache(newEntries);
+    setSyncStatus('syncing');
+    sb.from('fill_ups').insert(toSb(entry, mpg)).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(){
+      setSyncStatus('offline');
+      addPending({ op: 'insert', entry: entry, mpg: mpg });
+    });
+  }
+
+  function handleDeleteEntry(id) {
+    if (!confirm('Delete this entry?')) return;
+    const newEntries = entriesRef.current.filter(function(e){ return e.id !== id; });
+    setEntries(newEntries);
+    saveCache(newEntries);
+    setSyncStatus('syncing');
+    sb.from('fill_ups').delete().eq('id', id).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(){
+      setSyncStatus('offline');
+      addPending({ op: 'delete', id: id });
+    });
+  }
+
+  function handleAddVehicle(name) {
+    if (vehicles.indexOf(name) !== -1) { alert('Vehicle already exists.'); return; }
+    setVehicles(function(prev){ return prev.concat([name]); });
+    setActiveVehicle(name);
+  }
+
+  function handleClearVehicle(vehicle) {
+    const newEntries = entriesRef.current.filter(function(e){ return e.vehicle !== vehicle; });
+    setEntries(newEntries);
+    saveCache(newEntries);
+    setSyncStatus('syncing');
+    sb.from('fill_ups').delete().eq('vehicle', vehicle).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(){
+      setSyncStatus('offline');
+      addPending({ op: 'deleteVehicle', vehicle: vehicle });
+    });
+  }
+
+  function handleRemoveVehicle(vehicle) {
+    const remaining = vehicles.filter(function(v){ return v !== vehicle; });
+    const newEntries = entriesRef.current.filter(function(e){ return e.vehicle !== vehicle; });
+    setVehicles(remaining);
+    setEntries(newEntries);
+    setActiveVehicle(remaining[0] || 'My Vehicle');
+    saveCache(newEntries);
+    setSyncStatus('syncing');
+    sb.from('fill_ups').delete().eq('vehicle', vehicle).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(){
+      setSyncStatus('offline');
+      addPending({ op: 'deleteVehicle', vehicle: vehicle });
+    });
+  }
+
+  function handleImport(importedData) {
+    const newEntries = importedData.entries || [];
+    setVehicles(importedData.vehicles || vehicles);
+    setActiveVehicle(importedData.activeVehicle || (importedData.vehicles || [])[0] || 'My Vehicle');
+    setEntries(newEntries);
+    saveCache(newEntries);
+    if (!newEntries.length) { alert('Data imported successfully.'); return; }
+    setSyncStatus('syncing');
+    const mpgM = computeMpg(newEntries);
+    const rows = newEntries.map(function(e){ return toSb(e, mpgM[e.id]); });
+    sb.from('fill_ups').upsert(rows).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+      alert('Data imported and synced to cloud successfully.');
+    }).catch(function(){
+      setSyncStatus('offline');
+      alert('Data imported locally. Will sync to cloud when online.');
+    });
+  }
+
+  function handleMigrateLocalData() {
+    const raw = localStorage.getItem(LEGACY_KEY);
+    if (!raw) { alert('No local data found in legacy storage.'); return; }
+    let legacy;
+    try { legacy = migrate(JSON.parse(raw)); } catch (e) { alert('Could not read local data.'); return; }
+    if (!legacy.entries || !legacy.entries.length) { alert('No entries found in local data.'); return; }
+    if (!confirm('Migrate ' + legacy.entries.length + ' local entries to Supabase?')) return;
+    setSyncStatus('syncing');
+    const mpgM = computeMpg(legacy.entries);
+    const rows = legacy.entries.map(function(e){ return toSb(e, mpgM[e.id]); });
+    sb.from('fill_ups').upsert(rows).then(function(r){
+      if (r.error) throw r.error;
+      return loadFromSupabase();
+    }).then(function(){
+      alert('Migrated ' + legacy.entries.length + ' entries to Supabase successfully.');
+    }).catch(function(){
+      setSyncStatus('offline');
+      alert('Could not reach Supabase. Please try again when online.');
+    });
+  }
+
+  const syncDotColor = { synced: '#34d399', syncing: '#f5a623', offline: '#f05252' }[syncStatus] || '#7a8299';
+  const syncLabel = { synced: 'synced', syncing: 'syncing…', offline: 'offline' }[syncStatus] || '';
+
   const tabs = [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'add', label: 'Add' },
@@ -535,16 +742,23 @@ function App() {
     { id: 'history', label: 'History' },
     { id: 'settings', label: 'Settings' }
   ];
+
   return h(React.Fragment, null,
     h('nav', null,
-      h('div', { className: 'nav-brand' }, '\u26fd ', h('span', null, 'Fuel'), 'Log'),
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        h('div', { className: 'nav-brand' }, '⛽ ', h('span', null, 'Fuel'), 'Log'),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontFamily: 'var(--mono)', color: syncDotColor } },
+          h('span', { style: { width: 7, height: 7, borderRadius: '50%', background: syncDotColor, display: 'inline-block', flexShrink: 0 } }),
+          syncLabel
+        )
+      ),
       h('div', { className: 'nav-tabs' }, tabs.map(function(t){
         return h('button', { key: t.id, className: 'nav-tab' + (tab === t.id ? ' active' : ''), onClick: function(){ setTab(t.id); } }, t.label);
       }))
     ),
     h('main', null,
       h('div', { className: 'vehicle-bar' },
-        data.vehicles.map(function(v){
+        vehicles.map(function(v){
           return h('div', { key: v, className: 'vehicle-chip' + (v === activeVehicle ? ' active' : ''), onClick: function(){ setActiveVehicle(v); } }, v);
         }),
         h('div', { className: 'vehicle-chip add-btn', onClick: function(){ setShowAddVehicle(true); } }, '+ Add vehicle')
@@ -553,7 +767,13 @@ function App() {
       tab === 'add' ? h(AddEntryForm, { vehicle: activeVehicle, onAdd: function(e){ handleAddEntry(e); setTab('dashboard'); } }) : null,
       tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
       tab === 'history' ? h(History, { entries: entriesWithMpg, vehicle: activeVehicle, onDelete: handleDeleteEntry }) : null,
-      tab === 'settings' ? h(Settings, { data: data, onUpdate: updateData }) : null
+      tab === 'settings' ? h(Settings, {
+        data: { vehicles: vehicles, entries: entriesWithMpg, activeVehicle: activeVehicle },
+        onClearVehicle: handleClearVehicle,
+        onRemoveVehicle: handleRemoveVehicle,
+        onImport: handleImport,
+        onMigrate: handleMigrateLocalData
+      }) : null
     ),
     showAddVehicle ? h(AddVehicleModal, { onAdd: handleAddVehicle, onClose: function(){ setShowAddVehicle(false); } }) : null
   );
