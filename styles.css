@@ -83,11 +83,12 @@ input::placeholder { color:var(--text-dim); }
 ::-webkit-scrollbar { width:4px; height:4px; }
 ::-webkit-scrollbar-track { background:transparent; }
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
-@media (max-width:420px) {
+@media (max-width:480px) {
   .stat-grid { grid-template-columns:repeat(2,1fr); }
   .stat-value { font-size:17px; }
   nav { padding-left:10px; padding-right:10px; }
   .nav-tab { padding:5px 8px; font-size:12px; }
+  .form-grid { grid-template-columns:1fr; }
 }
 
 /* ── v2 additions: fuel type, partial fills, toggles ── */
