@@ -571,6 +571,7 @@ function App() {
   const [tab, setTab] = useState('dashboard');
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [syncStatus, setSyncStatus] = useState('syncing');
+  const [loading, setLoading] = useState(true);
 
   // keep a ref so async callbacks always see current entries without stale closure
   const entriesRef = useRef(entries);
@@ -588,15 +589,28 @@ function App() {
 
   function loadFromSupabase() {
     setSyncStatus('syncing');
-    return sb.from('fill_ups').select('*').then(function(res){
+    return sb.from('fill_ups').select('*').order('date', { ascending: true }).then(function(res){
       if (res.error) throw res.error;
+      console.log('[FuelLog] raw row sample:', res.data[0]);
       const mapped = res.data.map(fromSb);
+      console.log('[FuelLog] mapped row sample:', mapped[0]);
+      // Rebuild vehicle list from the fetched data so a fresh device shows all vehicles
+      const prefs = loadPrefs();
+      const sbVehicles = Array.from(new Set(mapped.map(function(e){ return e.vehicle; })));
+      const mergedVehicles = sbVehicles.length ? sbVehicles : (prefs.vehicles || ['My Vehicle']);
+      const savedActive = prefs.activeVehicle;
+      const activeV = (savedActive && mergedVehicles.indexOf(savedActive) !== -1) ? savedActive : mergedVehicles[0];
       setEntries(mapped);
+      setVehicles(mergedVehicles);
+      setActiveVehicle(activeV);
       saveCache(mapped);
       setSyncStatus('synced');
-    }).catch(function(){
+    }).catch(function(err){
+      console.warn('[FuelLog] Supabase read failed, falling back to localStorage:', err);
       setEntries(loadCache());
       setSyncStatus('offline');
+    }).finally(function(){
+      setLoading(false);
     });
   }
 
@@ -731,6 +745,8 @@ function App() {
       alert('Could not reach Supabase. Please try again when online.');
     });
   }
+
+  if (loading) return h('div', { style: { padding: 32, textAlign: 'center', color: 'var(--text-muted)', fontFamily: 'var(--mono)' } }, 'Loading…');
 
   const syncDotColor = { synced: '#34d399', syncing: '#f5a623', offline: '#f05252' }[syncStatus] || '#7a8299';
   const syncLabel = { synced: 'synced', syncing: 'syncing…', offline: 'offline' }[syncStatus] || '';
