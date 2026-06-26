@@ -21,6 +21,8 @@ function toSb(entry, mpg) {
     fuel_type: entry.fuelType,
     partial: !!entry.partial,
     notes: entry.notes ? entry.notes : null,
+    latitude: entry.lat != null ? entry.lat : null,
+    longitude: entry.lng != null ? entry.lng : null,
     mpg: mpg != null ? mpg : null
   };
 }
@@ -36,7 +38,9 @@ function fromSb(row) {
     totalPrice: row.total_price,
     fuelType: row.fuel_type || '',
     partial: !!row.partial,
-    notes: row.notes || ''
+    notes: row.notes || '',
+    lat: row.latitude != null ? row.latitude : null,
+    lng: row.longitude != null ? row.longitude : null
   };
 }
 
@@ -68,6 +72,8 @@ function migrate(data) {
       if (e.partial === undefined) e.partial = false;
       if (e.fuelType === undefined) e.fuelType = '';
       if (e.notes === undefined) e.notes = '';
+      if (e.lat === undefined) e.lat = null;
+      if (e.lng === undefined) e.lng = null;
     });
   }
   return data;
@@ -89,7 +95,23 @@ function fuelLabel(v) {
   return f ? f.label : '—';
 }
 
+// ── THEMES ───────────────────────────────────────────────────────────────────
+// id maps to a :root[data-theme="id"] block in styles.css. 'midnight' is the
+// default (base :root vars), so it has no override block.
+const THEMES = [
+  { id: 'midnight', label: 'Midnight', swatch: '#f5a623' },
+  { id: 'ocean',    label: 'Ocean',    swatch: '#38bdf8' },
+  { id: 'forest',   label: 'Forest',   swatch: '#4ade80' },
+  { id: 'violet',   label: 'Violet',   swatch: '#a78bfa' },
+  { id: 'light',    label: 'Daylight', swatch: '#d97706' }
+];
+
 // ── HELPERS ──────────────────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+  });
+}
 function mpgColor(mpg) {
   if (mpg === null || mpg === undefined) return '';
   if (mpg >= 30) return 'mpg-hi';
@@ -206,9 +228,20 @@ function BarChart(props) {
 // ── ADD ENTRY FORM ────────────────────────────────────────────────────────────
 function AddEntryForm(props) {
   const today = new Date().toISOString().split('T')[0];
-  const blank = { date: today, tripMiles: '', totalMiles: '', gallons: '', pricePerGallon: '', fuelType: '', partial: false, notes: '' };
+  const blank = { date: today, tripMiles: '', totalMiles: '', gallons: '', pricePerGallon: '', fuelType: '', partial: false, notes: '', lat: null, lng: null, geoStatus: '' };
   const state = useState(blank); const f = state[0], setF = state[1];
   function set(k, v){ setF(function(prev){ var n = Object.assign({}, prev); n[k]=v; return n; }); }
+  function captureLocation() {
+    if (!navigator.geolocation) { set('geoStatus', 'error'); return; }
+    set('geoStatus', 'locating');
+    navigator.geolocation.getCurrentPosition(function(pos){
+      setF(function(prev){ return Object.assign({}, prev, {
+        lat: parseFloat(pos.coords.latitude.toFixed(6)),
+        lng: parseFloat(pos.coords.longitude.toFixed(6)),
+        geoStatus: 'ok'
+      }); });
+    }, function(){ set('geoStatus', 'error'); }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  }
   const tripMilesNum = parseFloat(f.tripMiles);
   const gallonsNum = parseFloat(f.gallons);
   const ppgNum = parseFloat(f.pricePerGallon);
@@ -224,7 +257,8 @@ function AddEntryForm(props) {
       gallons: gallonsNum, pricePerGallon: !isNaN(ppgNum) ? ppgNum : null,
       totalPrice: totalPrice ? parseFloat(totalPrice.toFixed(2)) : null,
       fuelType: f.fuelType, partial: !!f.partial,
-      notes: f.notes ? f.notes.trim() : ''
+      notes: f.notes ? f.notes.trim() : '',
+      lat: f.lat, lng: f.lng
     };
     props.onAdd(entry);
     setF(Object.assign({}, blank, { date: f.date, fuelType: f.fuelType }));
@@ -269,6 +303,22 @@ function AddEntryForm(props) {
         h('label', null, 'Notes'),
         h('input', { type: 'text', placeholder: 'e.g. Shell on Main St, topped off',
           value: f.notes, onChange: function(e){ set('notes', e.target.value); } })
+      ),
+      h('div', { className: 'form-group full' },
+        h('label', null, 'Location'),
+        h('div', { className: 'geo-row' },
+          h('button', { type: 'button', className: 'btn btn-ghost',
+            onClick: captureLocation, disabled: f.geoStatus === 'locating' },
+            f.geoStatus === 'locating' ? 'Locating…' : (f.lat != null ? '📍 Update location' : '📍 Capture location')
+          ),
+          h('span', { className: 'geo-status' },
+            f.geoStatus === 'error' ? h('span', { style: { color: 'var(--red)' } }, 'Location unavailable') :
+            (f.lat != null ? h('span', { style: { color: 'var(--accent2)' } }, fmt(f.lat, 5) + ', ' + fmt(f.lng, 5)) :
+            h('span', { style: { color: 'var(--text-dim)' } }, 'optional'))
+          ),
+          f.lat != null ? h('button', { type: 'button', className: 'delete-btn', title: 'Clear location',
+            onClick: function(){ setF(function(prev){ return Object.assign({}, prev, { lat: null, lng: null, geoStatus: '' }); }); } }, '×') : null
+        )
       )
     ),
     f.partial ? h('div', { className: 'info-note' },
@@ -515,6 +565,65 @@ function History(props) {
   );
 }
 
+// ── MAP (Leaflet) ─────────────────────────────────────────────────────────────
+function MapView(props) {
+  const containerRef = useRef(null);
+  const mapRef = useRef(null);
+  const layerRef = useRef(null);
+  const ve = props.entries.filter(function(e){
+    return e.vehicle === props.vehicle && e.lat != null && e.lng != null;
+  });
+  const hasLeaflet = typeof window !== 'undefined' && !!window.L;
+
+  useEffect(function(){
+    if (!hasLeaflet || !containerRef.current) return;
+    if (!mapRef.current) {
+      mapRef.current = window.L.map(containerRef.current, { scrollWheelZoom: true })
+        .setView([39.5, -98.35], 4); // continental US fallback view
+      window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
+      }).addTo(mapRef.current);
+      layerRef.current = window.L.layerGroup().addTo(mapRef.current);
+    }
+    const map = mapRef.current;
+    const layer = layerRef.current;
+    layer.clearLayers();
+    const pts = [];
+    ve.forEach(function(e){
+      const html = '<strong>' + escapeHtml(fmtDate(e.date)) + '</strong><br>' +
+        escapeHtml(fmt(e.gallons, 3)) + ' gal' + (e.totalPrice ? ' &middot; $' + escapeHtml(fmt(e.totalPrice)) : '') +
+        (e.fuelType ? '<br>' + escapeHtml(fuelLabel(e.fuelType)) : '') +
+        (e.notes ? '<br><em>' + escapeHtml(e.notes) + '</em>' : '');
+      window.L.marker([e.lat, e.lng]).bindPopup(html).addTo(layer);
+      pts.push([e.lat, e.lng]);
+    });
+    if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
+    // Leaflet needs a size recalc once the tab/container is actually visible
+    setTimeout(function(){ if (mapRef.current) mapRef.current.invalidateSize(); }, 120);
+  }, [props.entries, props.vehicle, hasLeaflet]);
+
+  useEffect(function(){
+    return function(){
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; layerRef.current = null; }
+    };
+  }, []);
+
+  return h('div', { className: 'card' },
+    h('div', { className: 'card-title' }, 'Fill-Up Map — ' + props.vehicle),
+    !hasLeaflet ? h('div', { className: 'info-note', style: { marginTop: 0 } },
+      'Map library unavailable (likely offline). Reconnect to view the map.'
+    ) : h(React.Fragment, null,
+      ve.length === 0 ? h('div', { className: 'info-note', style: { marginTop: 0, marginBottom: 10 } },
+        'No fill-ups with a saved location yet. Tap “Capture location” when logging a fill-up to plot it here.'
+      ) : null,
+      h('div', { ref: containerRef, className: 'map-canvas' }),
+      ve.length ? h('div', { style: { marginTop: 10, fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--mono)' } },
+        ve.length + ' location' + (ve.length !== 1 ? 's' : '') + ' plotted'
+      ) : null
+    )
+  );
+}
+
 // ── EXPORTS ────────────────────────────────────────────────────────────────────
 function downloadFile(filename, content, mime) {
   const blob = new Blob([content], { type: mime });
@@ -524,7 +633,7 @@ function downloadFile(filename, content, mime) {
   URL.revokeObjectURL(url);
 }
 function toCSV(entries) {
-  const headers = ['Date','Vehicle','Trip Miles','Total Odometer','Gallons','Price Per Gallon','Total Cost','Fuel Type','Partial Fill','MPG','Notes'];
+  const headers = ['Date','Vehicle','Trip Miles','Total Odometer','Gallons','Price Per Gallon','Total Cost','Fuel Type','Partial Fill','MPG','Notes','Latitude','Longitude'];
   const rows = entries.slice().sort(function(a,b){return a.date.localeCompare(b.date);}).map(function(e){
     return [
       e.date, e.vehicle,
@@ -536,7 +645,9 @@ function toCSV(entries) {
       e.fuelType ? fuelLabel(e.fuelType) : '',
       e.partial ? 'Yes' : 'No',
       (e.partial || e.mpg == null) ? '' : e.mpg,
-      e.notes != null ? e.notes : ''
+      e.notes != null ? e.notes : '',
+      e.lat != null ? e.lat : '',
+      e.lng != null ? e.lng : ''
     ];
   });
   function esc(v){ const s = String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }
@@ -574,6 +685,27 @@ function Settings(props) {
     props.onRemoveVehicle(vehicle);
   }
   return h('div', { className: 'card' },
+    h('div', { className: 'settings-section' },
+      h('div', { className: 'settings-title' }, 'Appearance'),
+      h('div', { className: 'setting-row', style: { borderBottom: 'none' } },
+        h('div', null,
+          h('div', { className: 'setting-label' }, 'Color theme'),
+          h('div', { className: 'setting-sub' }, 'Recolors the app chrome')
+        )
+      ),
+      h('div', { className: 'theme-grid' },
+        THEMES.map(function(t){
+          return h('button', {
+            key: t.id,
+            className: 'theme-chip' + (props.theme === t.id ? ' active' : ''),
+            onClick: function(){ props.onThemeChange(t.id); }
+          },
+            h('span', { className: 'theme-swatch', style: { background: t.swatch } }),
+            t.label
+          );
+        })
+      )
+    ),
     h('div', { className: 'settings-section' },
       h('div', { className: 'settings-title' }, 'Cloud Sync'),
       h('div', { className: 'setting-row' },
@@ -661,14 +793,20 @@ function App() {
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [syncStatus, setSyncStatus] = useState('syncing');
   const [loading, setLoading] = useState(true);
+  const [theme, setTheme] = useState(function(){ return loadPrefs().theme || 'midnight'; });
 
   // keep a ref so async callbacks always see current entries without stale closure
   const entriesRef = useRef(entries);
   useEffect(function(){ entriesRef.current = entries; }, [entries]);
 
   useEffect(function(){
-    savePrefs({ vehicles: vehicles, activeVehicle: activeVehicle });
-  }, [vehicles, activeVehicle]);
+    savePrefs({ vehicles: vehicles, activeVehicle: activeVehicle, theme: theme });
+  }, [vehicles, activeVehicle, theme]);
+
+  // Apply the selected color theme to the document root
+  useEffect(function(){
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
 
   useEffect(function(){
     loadFromSupabase();
@@ -841,12 +979,19 @@ function App() {
   const syncLabel = { synced: 'synced', syncing: 'syncing…', offline: 'offline' }[syncStatus] || '';
 
   const tabs = [
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'add', label: 'Add' },
-    { id: 'monthly', label: 'Monthly' },
-    { id: 'history', label: 'History' },
-    { id: 'settings', label: 'Settings' }
+    { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+    { id: 'add', label: 'Add', icon: '⛽' },
+    { id: 'monthly', label: 'Monthly', icon: '📅' },
+    { id: 'history', label: 'History', icon: '📜' },
+    { id: 'map', label: 'Map', icon: '🗺️' },
+    { id: 'settings', label: 'Settings', icon: '⚙️' }
   ];
+  function tabButton(t) {
+    return h('button', { key: t.id, className: 'nav-tab' + (tab === t.id ? ' active' : ''), onClick: function(){ setTab(t.id); } },
+      h('span', { className: 'nav-ico' }, t.icon),
+      h('span', { className: 'nav-lbl' }, t.label)
+    );
+  }
 
   return h(React.Fragment, null,
     h('nav', null,
@@ -857,9 +1002,7 @@ function App() {
           syncLabel
         )
       ),
-      h('div', { className: 'nav-tabs' }, tabs.map(function(t){
-        return h('button', { key: t.id, className: 'nav-tab' + (tab === t.id ? ' active' : ''), onClick: function(){ setTab(t.id); } }, t.label);
-      }))
+      h('div', { className: 'nav-tabs top-tabs' }, tabs.map(tabButton))
     ),
     h('main', null,
       h('div', { className: 'vehicle-bar' },
@@ -872,14 +1015,18 @@ function App() {
       tab === 'add' ? h(AddEntryForm, { vehicle: activeVehicle, onAdd: function(e){ handleAddEntry(e); setTab('dashboard'); } }) : null,
       tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
       tab === 'history' ? h(History, { entries: entriesWithMpg, vehicle: activeVehicle, onDelete: handleDeleteEntry }) : null,
+      tab === 'map' ? h(MapView, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
       tab === 'settings' ? h(Settings, {
         data: { vehicles: vehicles, entries: entriesWithMpg, activeVehicle: activeVehicle },
+        theme: theme,
+        onThemeChange: setTheme,
         onClearVehicle: handleClearVehicle,
         onRemoveVehicle: handleRemoveVehicle,
         onImport: handleImport,
         onMigrate: handleMigrateLocalData
       }) : null
     ),
+    h('div', { className: 'bottom-nav' }, tabs.map(tabButton)),
     showAddVehicle ? h(AddVehicleModal, { onAdd: handleAddVehicle, onClose: function(){ setShowAddVehicle(false); } }) : null
   );
 }

@@ -14,9 +14,13 @@ nav { background:var(--surface); border-bottom:1px solid var(--border); padding:
 .nav-brand { font-family:var(--mono); font-size:15px; font-weight:600; color:var(--accent); letter-spacing:0.04em; }
 .nav-brand span { color:var(--text-muted); font-weight:400; }
 .nav-tabs { display:flex; gap:2px; }
-.nav-tab { background:none; border:none; color:var(--text-muted); font-family:var(--sans); font-size:13px; font-weight:500; padding:6px 12px; border-radius:6px; cursor:pointer; transition:all 0.15s; }
+.nav-tab { display:inline-flex; align-items:center; gap:5px; background:none; border:none; color:var(--text-muted); font-family:var(--sans); font-size:13px; font-weight:500; padding:6px 12px; border-radius:6px; cursor:pointer; transition:all 0.15s; }
 .nav-tab.active { background:var(--accent-dim); color:var(--accent); }
 .nav-tab:hover:not(.active) { color:var(--text); background:var(--surface2); }
+.nav-ico { font-size:13px; line-height:1; }
+.nav-lbl { line-height:1; }
+/* Bottom tab bar is hidden on desktop; shown on small screens (see media query) */
+.bottom-nav { display:none; }
 main { flex:1; padding:16px; max-width:700px; margin:0 auto; width:100%; padding-bottom:calc(16px + env(safe-area-inset-bottom,0)); }
 .vehicle-bar { display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
 .vehicle-chip { font-family:var(--mono); font-size:12px; padding:5px 12px; border-radius:20px; border:1px solid var(--border); background:var(--surface2); color:var(--text-muted); cursor:pointer; transition:all 0.15s; white-space:nowrap; }
@@ -87,18 +91,23 @@ input::placeholder { color:var(--text-dim); }
   .stat-grid { grid-template-columns:repeat(2,1fr); }
   .stat-value { font-size:17px; }
   nav { padding-left:10px; padding-right:10px; }
-  .nav-tab { padding:8px 8px; font-size:12px; }
   .form-grid { grid-template-columns:1fr; }
-  /* Stick the page buttons to the bottom of the screen on small displays */
-  .nav-tabs {
-    position:fixed; left:0; right:0; bottom:0; z-index:100;
+  /* On small screens hide the top tab row and use a fixed bottom bar instead.
+     The bottom bar is a direct child of the root (sibling to <nav>/<main>),
+     so position:fixed is relative to the viewport and stays correctly placed
+     on every page regardless of content height or horizontal table overflow. */
+  .top-tabs { display:none; }
+  .bottom-nav {
+    display:flex; position:fixed; left:0; right:0; bottom:0; z-index:150;
     background:var(--surface); border-top:1px solid var(--border);
-    justify-content:space-around; gap:0;
-    padding:6px 4px calc(6px + env(safe-area-inset-bottom,0));
+    justify-content:space-around; align-items:stretch; gap:0;
+    padding:6px 2px calc(6px + env(safe-area-inset-bottom,0));
   }
-  .nav-tabs .nav-tab { flex:1; border-radius:0; }
+  .bottom-nav .nav-tab { flex:1; flex-direction:column; gap:2px; border-radius:0; padding:4px 0; }
+  .bottom-nav .nav-ico { font-size:19px; }
+  .bottom-nav .nav-lbl { font-size:9px; letter-spacing:0.02em; }
   /* Keep content clear of the fixed bottom bar */
-  main { padding-bottom:calc(64px + env(safe-area-inset-bottom,0)); }
+  main { padding-bottom:calc(74px + env(safe-area-inset-bottom,0)); }
 }
 
 /* ── v2 additions: fuel type, partial fills, toggles ── */
@@ -115,3 +124,27 @@ select { background-image: linear-gradient(45deg, transparent 50%, var(--text-mu
 .delete-btn.armed { color: var(--red); font-family: var(--mono); font-size: 11px; font-weight: 600; border: 1px solid rgba(240,82,82,0.5); background: rgba(240,82,82,0.1); padding: 2px 6px; }
 .notes-row td { border-bottom: 1px solid rgba(42,48,64,0.5); }
 .notes-cell { text-align: left !important; font-size: 11px; color: var(--text-muted) !important; font-family: var(--mono); padding-top: 0 !important; padding-bottom: 8px !important; white-space: normal; }
+
+/* ── v4 additions: color themes, geolocation, Leaflet map ── */
+/* Theme overrides — base :root above is the default "midnight" theme */
+:root[data-theme="ocean"]  { --bg:#0b1220; --surface:#121c2e; --surface2:#1a2740; --border:#243651; --accent:#38bdf8; --accent-dim:rgba(56,189,248,0.14); --accent2:#22d3ee; }
+:root[data-theme="forest"] { --bg:#0d1410; --surface:#152019; --surface2:#1d2c22; --border:#2a3d30; --accent:#4ade80; --accent-dim:rgba(74,222,128,0.14); --accent2:#a3e635; }
+:root[data-theme="violet"] { --bg:#120f1a; --surface:#1b1726; --surface2:#251f36; --border:#372d4d; --accent:#a78bfa; --accent-dim:rgba(167,139,250,0.16); --accent2:#f472b6; }
+:root[data-theme="light"]  { --bg:#f4f6fb; --surface:#ffffff; --surface2:#eef1f7; --border:#d7dde8; --accent:#d97706; --accent-dim:rgba(217,119,6,0.12); --accent2:#0891b2; --text:#1a2030; --text-muted:#5b6477; --text-dim:#9aa3b5; }
+
+/* Theme picker (Settings) */
+.theme-grid { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+.theme-chip { display:inline-flex; align-items:center; gap:7px; background:var(--surface2); border:1px solid var(--border); border-radius:20px; color:var(--text-muted); font-family:var(--mono); font-size:12px; padding:6px 12px; cursor:pointer; transition:all 0.15s; }
+.theme-chip:hover:not(.active) { color:var(--text); border-color:var(--text-dim); }
+.theme-chip.active { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
+.theme-swatch { width:12px; height:12px; border-radius:50%; flex-shrink:0; box-shadow:0 0 0 1px rgba(0,0,0,0.25) inset; }
+
+/* Geolocation capture row (Add form) */
+.geo-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.geo-row .btn { padding:8px 12px; font-size:13px; }
+.geo-status { font-family:var(--mono); font-size:12px; }
+
+/* Leaflet map canvas */
+.map-canvas { width:100%; height:340px; border-radius:8px; overflow:hidden; border:1px solid var(--border); }
+.leaflet-container { background:var(--surface2); font-family:var(--sans); }
+.leaflet-popup-content { font-family:var(--sans); font-size:13px; line-height:1.4; }

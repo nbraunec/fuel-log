@@ -1,5 +1,5 @@
 // Fuel Log service worker — offline caching
-const CACHE = 'fuel-log-v5';
+const CACHE = 'fuel-log-v6';
 
 // Local app shell + the CDN React files (cached on first fetch).
 const PRECACHE = [
@@ -11,7 +11,11 @@ const PRECACHE = [
   './icon-192.png',
   './icon-512.png',
   'https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js'
+  'https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js',
+  // Leaflet library is cached so the map page's chrome works offline.
+  // (Map tiles are network-only and will not render without a connection.)
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
 ];
 
 // Install: pre-cache the app shell. Don't fail install if a CDN file misses.
