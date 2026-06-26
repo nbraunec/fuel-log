@@ -87,8 +87,18 @@ input::placeholder { color:var(--text-dim); }
   .stat-grid { grid-template-columns:repeat(2,1fr); }
   .stat-value { font-size:17px; }
   nav { padding-left:10px; padding-right:10px; }
-  .nav-tab { padding:5px 8px; font-size:12px; }
+  .nav-tab { padding:8px 8px; font-size:12px; }
   .form-grid { grid-template-columns:1fr; }
+  /* Stick the page buttons to the bottom of the screen on small displays */
+  .nav-tabs {
+    position:fixed; left:0; right:0; bottom:0; z-index:100;
+    background:var(--surface); border-top:1px solid var(--border);
+    justify-content:space-around; gap:0;
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom,0));
+  }
+  .nav-tabs .nav-tab { flex:1; border-radius:0; }
+  /* Keep content clear of the fixed bottom bar */
+  main { padding-bottom:calc(64px + env(safe-area-inset-bottom,0)); }
 }
 
 /* ── v2 additions: fuel type, partial fills, toggles ── */
@@ -100,3 +110,8 @@ select { background-image: linear-gradient(45deg, transparent 50%, var(--text-mu
 .toggle-btn:hover:not(.active) { color: var(--text); }
 .info-note { margin-top: 10px; background: rgba(62,207,207,0.08); border: 1px solid rgba(62,207,207,0.25); border-radius: 7px; padding: 10px 12px; font-size: 12px; color: var(--accent2); font-family: var(--mono); line-height: 1.4; }
 .partial-tag { display: inline-block; margin-left: 5px; font-size: 9px; font-weight: 600; font-family: var(--mono); color: var(--accent2); border: 1px solid rgba(62,207,207,0.4); border-radius: 3px; padding: 0px 3px; vertical-align: middle; }
+
+/* ── v3 additions: two-tap delete, fill-up notes ── */
+.delete-btn.armed { color: var(--red); font-family: var(--mono); font-size: 11px; font-weight: 600; border: 1px solid rgba(240,82,82,0.5); background: rgba(240,82,82,0.1); padding: 2px 6px; }
+.notes-row td { border-bottom: 1px solid rgba(42,48,64,0.5); }
+.notes-cell { text-align: left !important; font-size: 11px; color: var(--text-muted) !important; font-family: var(--mono); padding-top: 0 !important; padding-bottom: 8px !important; white-space: normal; }

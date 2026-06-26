@@ -20,6 +20,7 @@ function toSb(entry, mpg) {
     total_price: entry.totalPrice,
     fuel_type: entry.fuelType,
     partial: !!entry.partial,
+    notes: entry.notes ? entry.notes : null,
     mpg: mpg != null ? mpg : null
   };
 }
@@ -34,7 +35,8 @@ function fromSb(row) {
     pricePerGallon: row.price_per_gallon,
     totalPrice: row.total_price,
     fuelType: row.fuel_type || '',
-    partial: !!row.partial
+    partial: !!row.partial,
+    notes: row.notes || ''
   };
 }
 
@@ -65,6 +67,7 @@ function migrate(data) {
     data.entries.forEach(function(e){
       if (e.partial === undefined) e.partial = false;
       if (e.fuelType === undefined) e.fuelType = '';
+      if (e.notes === undefined) e.notes = '';
     });
   }
   return data;
@@ -203,7 +206,7 @@ function BarChart(props) {
 // ── ADD ENTRY FORM ────────────────────────────────────────────────────────────
 function AddEntryForm(props) {
   const today = new Date().toISOString().split('T')[0];
-  const blank = { date: today, tripMiles: '', totalMiles: '', gallons: '', pricePerGallon: '', fuelType: '', partial: false };
+  const blank = { date: today, tripMiles: '', totalMiles: '', gallons: '', pricePerGallon: '', fuelType: '', partial: false, notes: '' };
   const state = useState(blank); const f = state[0], setF = state[1];
   function set(k, v){ setF(function(prev){ var n = Object.assign({}, prev); n[k]=v; return n; }); }
   const tripMilesNum = parseFloat(f.tripMiles);
@@ -220,7 +223,8 @@ function AddEntryForm(props) {
       tripMiles: tripMilesNum, totalMiles: f.totalMiles ? parseFloat(f.totalMiles) : null,
       gallons: gallonsNum, pricePerGallon: !isNaN(ppgNum) ? ppgNum : null,
       totalPrice: totalPrice ? parseFloat(totalPrice.toFixed(2)) : null,
-      fuelType: f.fuelType, partial: !!f.partial
+      fuelType: f.fuelType, partial: !!f.partial,
+      notes: f.notes ? f.notes.trim() : ''
     };
     props.onAdd(entry);
     setF(Object.assign({}, blank, { date: f.date, fuelType: f.fuelType }));
@@ -260,6 +264,11 @@ function AddEntryForm(props) {
           h('button', { type: 'button', className: 'toggle-btn' + (!f.partial ? ' active' : ''), onClick: function(){ set('partial', false); } }, 'Full'),
           h('button', { type: 'button', className: 'toggle-btn' + (f.partial ? ' active' : ''), onClick: function(){ set('partial', true); } }, 'Partial')
         )
+      ),
+      h('div', { className: 'form-group full' },
+        h('label', null, 'Notes'),
+        h('input', { type: 'text', placeholder: 'e.g. Shell on Main St, topped off',
+          value: f.notes, onChange: function(e){ set('notes', e.target.value); } })
       )
     ),
     f.partial ? h('div', { className: 'info-note' },
@@ -292,6 +301,12 @@ function Dashboard(props) {
   const recent5 = ve.slice().filter(function(e){return e.mpg != null;}).sort(function(a,b){return b.date.localeCompare(a.date);}).slice(0,5).map(function(e){return e.mpg;});
   const recent5avg = recent5.length ? recent5.reduce(function(a,b){return a+b;},0)/recent5.length : null;
   const trendUp = (recent5avg && avgMpg) ? recent5avg >= avgMpg : null;
+  const curYear = String(new Date().getFullYear());
+  const yearEntries = ve.filter(function(e){ return e.date && e.date.slice(0,4) === curYear; });
+  const yearSpent = yearEntries.reduce(function(a,e){return a+(e.totalPrice||0);},0);
+  const yearMiles = yearEntries.reduce(function(a,e){return a+(e.tripMiles||0);},0);
+  const yearMpgs = yearEntries.map(function(e){return e.mpg;}).filter(function(m){return m != null;});
+  const yearAvgMpg = yearMpgs.length ? yearMpgs.reduce(function(a,b){return a+b;},0)/yearMpgs.length : null;
   function statCell(label, val, cls, unit) {
     return h('div', { className: 'stat-cell' },
       h('div', { className: 'stat-label' }, label),
@@ -313,6 +328,14 @@ function Dashboard(props) {
       trendUp !== null ? h('div', { style: { marginTop: 10, fontSize: 12, color: trendUp ? 'var(--green)' : 'var(--red)', fontFamily: 'var(--mono)' } },
         (trendUp ? '↑' : '↓') + ' Recent avg ' + fmt(recent5avg) + ' mpg vs ' + fmt(avgMpg) + ' mpg lifetime'
       ) : null
+    ),
+    h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, curYear + ' Year to Date — ' + props.vehicle),
+      h('div', { className: 'stat-grid' },
+        statCell('Total Spent', yearSpent > 0 ? '$' + fmt(yearSpent) : '—', 'accent', 'this year'),
+        statCell('Total Miles', yearMiles > 0 ? Math.round(yearMiles).toLocaleString() : '—', '', 'this year'),
+        statCell('Avg MPG', fmt(yearAvgMpg), yearAvgMpg ? mpgColor(yearAvgMpg) : '', 'this year')
+      )
     ),
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'MPG Trend'),
@@ -367,10 +390,52 @@ function Monthly(props) {
     );
   }
   const monthsDesc = months.slice().reverse();
+  // ── MPG & cost/mile broken down by fuel grade ──
+  const fuelGroups = {};
+  ve.forEach(function(e){
+    const k = e.fuelType || '';
+    if (!fuelGroups[k]) fuelGroups[k] = { key: k, mpgs: [], spent: 0, miles: 0, fills: 0 };
+    if (e.mpg != null) fuelGroups[k].mpgs.push(e.mpg);
+    fuelGroups[k].spent += e.totalPrice || 0;
+    fuelGroups[k].miles += e.tripMiles || 0;
+    fuelGroups[k].fills += 1;
+  });
+  const fuelRows = Object.keys(fuelGroups).map(function(k){
+    const g = fuelGroups[k];
+    return {
+      key: k,
+      label: fuelLabel(k),
+      avgMpg: g.mpgs.length ? g.mpgs.reduce(function(a,b){return a+b;},0)/g.mpgs.length : null,
+      costPerMile: g.miles > 0 ? g.spent / g.miles : null,
+      fills: g.fills
+    };
+  }).sort(function(a,b){
+    if (a.avgMpg == null) return 1;
+    if (b.avgMpg == null) return -1;
+    return b.avgMpg - a.avgMpg;
+  });
   return h(React.Fragment, null,
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Spend / Month (last 6) — ' + props.vehicle),
       h(BarChart, { rows: recentMonths })
+    ),
+    h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'MPG by Fuel Type'),
+      h('div', { style: { overflowX: 'auto' } },
+        h('table', { className: 'history-table' },
+          h('thead', null, h('tr', null,
+            h('th', null, 'Fuel'), h('th', null, 'Fills'), h('th', null, 'Avg MPG'), h('th', null, '$/mi')
+          )),
+          h('tbody', null, fuelRows.map(function(r){
+            return h('tr', { key: r.key || 'none' },
+              h('td', null, r.label),
+              h('td', null, String(r.fills)),
+              h('td', { className: 'mpg-cell ' + mpgColor(r.avgMpg) }, fmt(r.avgMpg)),
+              h('td', null, r.costPerMile ? '$' + fmt(r.costPerMile, 3) : '—')
+            );
+          }))
+        )
+      )
     ),
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Monthly Detail'),
@@ -400,6 +465,16 @@ function Monthly(props) {
 // ── HISTORY ───────────────────────────────────────────────────────────────────
 function History(props) {
   const ve = props.entries.filter(function(e){return e.vehicle === props.vehicle;}).sort(function(a,b){return b.date.localeCompare(a.date);});
+  const armState = useState(null); const armedId = armState[0], setArmedId = armState[1];
+  const armTimer = useRef();
+  function disarm() { if (armTimer.current) { clearTimeout(armTimer.current); armTimer.current = null; } setArmedId(null); }
+  function handleDeleteClick(id) {
+    if (armedId === id) { disarm(); props.onDelete(id); return; }
+    // first tap: arm this row, auto-disarm after 3s
+    if (armTimer.current) clearTimeout(armTimer.current);
+    setArmedId(id);
+    armTimer.current = setTimeout(function(){ setArmedId(null); armTimer.current = null; }, 3000);
+  }
   return h('div', { className: 'card' },
     h('div', { className: 'card-title' }, 'All Fill-Ups — ' + props.vehicle + ' (' + ve.length + ')'),
     ve.length === 0 ? h('div', { className: 'no-data' }, 'No fill-ups logged yet') :
@@ -410,17 +485,30 @@ function History(props) {
           h('th', null, 'PPG'), h('th', null, 'Total'), h('th', null, 'Fuel'), h('th', null, 'MPG'), h('th', null, '')
         )),
         h('tbody', null, ve.map(function(e){
-          return h('tr', { key: e.id },
-            h('td', null, fmtDate(e.date), e.partial ? h('span', { className: 'partial-tag' }, 'P') : null),
-            h('td', null, fmt(e.tripMiles, 1)),
-            h('td', null, e.totalMiles ? Math.round(e.totalMiles).toLocaleString() : '—'),
-            h('td', null, fmt(e.gallons, 3)),
-            h('td', null, e.pricePerGallon ? '$' + fmt(e.pricePerGallon) : '—'),
-            h('td', null, e.totalPrice ? '$' + fmt(e.totalPrice) : '—'),
-            h('td', { style: { fontSize: 10, color: 'var(--text-muted)' } }, e.fuelType ? fuelLabel(e.fuelType) : '—'),
-            h('td', { className: 'mpg-cell ' + mpgColor(e.mpg) }, e.partial ? '—' : fmt(e.mpg)),
-            h('td', null, h('button', { className: 'delete-btn', onClick: function(){ props.onDelete(e.id); }, title: 'Delete' }, '×'))
-          );
+          const armed = armedId === e.id;
+          const rows = [
+            h('tr', { key: e.id },
+              h('td', null, fmtDate(e.date), e.partial ? h('span', { className: 'partial-tag' }, 'P') : null),
+              h('td', null, fmt(e.tripMiles, 1)),
+              h('td', null, e.totalMiles ? Math.round(e.totalMiles).toLocaleString() : '—'),
+              h('td', null, fmt(e.gallons, 3)),
+              h('td', null, e.pricePerGallon ? '$' + fmt(e.pricePerGallon) : '—'),
+              h('td', null, e.totalPrice ? '$' + fmt(e.totalPrice) : '—'),
+              h('td', { style: { fontSize: 10, color: 'var(--text-muted)' } }, e.fuelType ? fuelLabel(e.fuelType) : '—'),
+              h('td', { className: 'mpg-cell ' + mpgColor(e.mpg) }, e.partial ? '—' : fmt(e.mpg)),
+              h('td', null, h('button', {
+                className: 'delete-btn' + (armed ? ' armed' : ''),
+                onClick: function(){ handleDeleteClick(e.id); },
+                title: armed ? 'Tap again to confirm' : 'Delete'
+              }, armed ? 'Sure?' : '×'))
+            )
+          ];
+          if (e.notes) {
+            rows.push(h('tr', { key: e.id + '-notes', className: 'notes-row' },
+              h('td', { colSpan: 9, className: 'notes-cell' }, '🗒 ' + e.notes)
+            ));
+          }
+          return rows;
         }))
       )
     )
@@ -436,7 +524,7 @@ function downloadFile(filename, content, mime) {
   URL.revokeObjectURL(url);
 }
 function toCSV(entries) {
-  const headers = ['Date','Vehicle','Trip Miles','Total Odometer','Gallons','Price Per Gallon','Total Cost','Fuel Type','Partial Fill','MPG'];
+  const headers = ['Date','Vehicle','Trip Miles','Total Odometer','Gallons','Price Per Gallon','Total Cost','Fuel Type','Partial Fill','MPG','Notes'];
   const rows = entries.slice().sort(function(a,b){return a.date.localeCompare(b.date);}).map(function(e){
     return [
       e.date, e.vehicle,
@@ -447,7 +535,8 @@ function toCSV(entries) {
       e.totalPrice != null ? e.totalPrice : '',
       e.fuelType ? fuelLabel(e.fuelType) : '',
       e.partial ? 'Yes' : 'No',
-      (e.partial || e.mpg == null) ? '' : e.mpg
+      (e.partial || e.mpg == null) ? '' : e.mpg,
+      e.notes != null ? e.notes : ''
     ];
   });
   function esc(v){ const s = String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; }
@@ -654,7 +743,7 @@ function App() {
   }
 
   function handleDeleteEntry(id) {
-    if (!confirm('Delete this entry?')) return;
+    // Confirmation is handled inline by History's two-tap "Sure?" button.
     const newEntries = entriesRef.current.filter(function(e){ return e.id !== id; });
     setEntries(newEntries);
     saveCache(newEntries);
