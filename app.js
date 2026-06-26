@@ -21,6 +21,7 @@ function toSb(entry, mpg) {
     fuel_type: entry.fuelType,
     partial: !!entry.partial,
     notes: entry.notes ? entry.notes : null,
+    driver: entry.driver ? entry.driver : null,
     latitude: entry.lat != null ? entry.lat : null,
     longitude: entry.lng != null ? entry.lng : null,
     mpg: mpg != null ? mpg : null
@@ -39,6 +40,7 @@ function fromSb(row) {
     fuelType: row.fuel_type || '',
     partial: !!row.partial,
     notes: row.notes || '',
+    driver: row.driver || '',
     lat: row.latitude != null ? row.latitude : null,
     lng: row.longitude != null ? row.longitude : null
   };
@@ -72,6 +74,7 @@ function migrate(data) {
       if (e.partial === undefined) e.partial = false;
       if (e.fuelType === undefined) e.fuelType = '';
       if (e.notes === undefined) e.notes = '';
+      if (e.driver === undefined) e.driver = '';
       if (e.lat === undefined) e.lat = null;
       if (e.lng === undefined) e.lng = null;
     });
@@ -163,41 +166,86 @@ function computeMpg(entries) {
   return result;
 }
 
-// ── MPG LINE CHART ─────────────────────────────────────────────────────────────
+// ── SMOOTH PATH HELPER ─────────────────────────────────────────────────────────
+// Builds a smooth cubic-Bézier path through points (Catmull-Rom style) so the
+// line charts read as gentle curves rather than jagged segments.
+function smoothPath(pts) {
+  if (!pts.length) return '';
+  if (pts.length < 3) {
+    return pts.map(function(p, i){ return (i===0?'M':'L') + p.x.toFixed(2) + ',' + p.y.toFixed(2); }).join(' ');
+  }
+  const t = 0.18; // tension
+  let d = 'M' + pts[0].x.toFixed(2) + ',' + pts[0].y.toFixed(2);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i-1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i+1];
+    const p3 = pts[i+2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) * t;
+    const c1y = p1.y + (p2.y - p0.y) * t;
+    const c2x = p2.x - (p3.x - p1.x) * t;
+    const c2y = p2.y - (p3.y - p1.y) * t;
+    d += ' C' + c1x.toFixed(2) + ',' + c1y.toFixed(2) + ' ' + c2x.toFixed(2) + ',' + c2y.toFixed(2) + ' ' + p2.x.toFixed(2) + ',' + p2.y.toFixed(2);
+  }
+  return d;
+}
+
+// ── MPG LINE CHART (per-fill + rolling 10-tank average) ─────────────────────────
 function MpgChart(props) {
   const data = props.entries.slice()
     .filter(function(e){ return e.mpg != null; })
     .sort(function(a,b){return a.date.localeCompare(b.date);}).slice(-20);
   if (data.length < 2) return h('div', { className: 'chart-empty' }, 'Add more full fill-ups to see trend');
   const mpgs = data.map(function(e){return e.mpg;});
+  // rolling average: mean of this entry + up to 9 preceding full fill-ups
+  const rolling = mpgs.map(function(_, i){
+    const window = mpgs.slice(Math.max(0, i - 9), i + 1);
+    return window.reduce(function(a,b){return a+b;},0) / window.length;
+  });
+  const showRolling = data.length >= 3;
   const min = Math.min.apply(null, mpgs) * 0.85;
   const max = Math.max.apply(null, mpgs) * 1.1;
   const W = 600, H = 120, PL = 8, PR = 8, PT = 10, PB = 24;
   const iW = W - PL - PR, iH = H - PT - PB;
+  function yOf(v){ return PT + iH - ((v - min) / (max - min)) * iH; }
   const pts = data.map(function(e, i) {
-    const x = PL + (i / (data.length - 1)) * iW;
-    const y = PT + iH - ((e.mpg - min) / (max - min)) * iH;
-    return { x: x, y: y, e: e };
+    return { x: PL + (i / (data.length - 1)) * iW, y: yOf(e.mpg), e: e };
   });
-  const pathD = pts.map(function(p, i){ return (i===0?'M':'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1); }).join(' ');
-  const areaD = pathD + ' L' + pts[pts.length-1].x + ',' + (H-PB) + ' L' + pts[0].x + ',' + (H-PB) + ' Z';
+  const rollPts = rolling.map(function(v, i){
+    return { x: PL + (i / (data.length - 1)) * iW, y: yOf(v) };
+  });
+  const perFillD = smoothPath(pts);
+  const rollD = smoothPath(rollPts);
+  const areaD = perFillD + ' L' + pts[pts.length-1].x.toFixed(2) + ',' + (H-PB) + ' L' + pts[0].x.toFixed(2) + ',' + (H-PB) + ' Z';
   const avg = mpgs.reduce(function(a,b){return a+b;},0) / mpgs.length;
-  const avgY = PT + iH - ((avg - min) / (max - min)) * iH;
+  const avgY = yOf(avg);
+  // legend, bottom-right (only meaningful once the rolling line is drawn)
+  const legX = W - 132, legY1 = H - PB - 16, legY2 = H - PB - 4;
   return h('div', { className: 'chart-wrap' },
     h('svg', { className: 'chart', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
       h('defs', null,
         h('linearGradient', { id: 'mpgGrad', x1: '0', y1: '0', x2: '0', y2: '1' },
-          h('stop', { offset: '0%', stopColor: '#f5a623', stopOpacity: '0.35' }),
+          h('stop', { offset: '0%', stopColor: '#f5a623', stopOpacity: '0.22' }),
           h('stop', { offset: '100%', stopColor: '#f5a623', stopOpacity: '0.02' })
         )
       ),
-      h('line', { x1: PL, y1: avgY, x2: W-PR, y2: avgY, stroke: '#3ecfcf', strokeWidth: '1', strokeDasharray: '4 4', opacity: '0.5' }),
+      h('line', { x1: PL, y1: avgY, x2: W-PR, y2: avgY, stroke: '#3ecfcf', strokeWidth: '1', strokeDasharray: '4 4', opacity: '0.35' }),
       h('path', { d: areaD, fill: 'url(#mpgGrad)' }),
-      h('path', { d: pathD, fill: 'none', stroke: '#f5a623', strokeWidth: '2', strokeLinecap: 'round', strokeLinejoin: 'round' }),
-      pts.map(function(p, i){ return h('circle', { key: i, cx: p.x, cy: p.y, r: '3.5', fill: '#f5a623', stroke: '#0f1117', strokeWidth: '1.5' }); }),
-      h('text', { x: W-PR, y: avgY - 4, textAnchor: 'end', fill: '#3ecfcf', fontSize: '10', fontFamily: 'IBM Plex Mono' }, 'avg ' + fmt(avg) + ' mpg'),
+      // per-fill-up line: thin, de-emphasized
+      h('path', { d: perFillD, fill: 'none', stroke: '#f5a623', strokeOpacity: '0.45', strokeWidth: '1.5', strokeLinecap: 'round', strokeLinejoin: 'round' }),
+      pts.map(function(p, i){ return h('circle', { key: i, cx: p.x, cy: p.y, r: '2.5', fill: '#f5a623', fillOpacity: '0.5' }); }),
+      // rolling 10-tank average: thick, primary
+      showRolling ? h('path', { d: rollD, fill: 'none', stroke: '#f5a623', strokeWidth: '2.5', strokeLinecap: 'round', strokeLinejoin: 'round' }) : null,
+      h('text', { x: W-PR, y: avgY - 4, textAnchor: 'end', fill: '#3ecfcf', fillOpacity: '0.6', fontSize: '10', fontFamily: 'IBM Plex Mono' }, 'avg ' + fmt(avg) + ' mpg'),
       h('text', { x: pts[0].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[0].e.date)),
-      h('text', { x: pts[pts.length-1].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[pts.length-1].e.date))
+      h('text', { x: pts[pts.length-1].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[pts.length-1].e.date)),
+      // legend, top-right (kept out of the bottom date-label zone)
+      showRolling ? h('g', null,
+        h('line', { x1: legX, y1: legY1, x2: legX + 16, y2: legY1, stroke: '#f5a623', strokeOpacity: '0.45', strokeWidth: '1.5' }),
+        h('text', { x: legX + 21, y: legY1 + 3, fill: '#7a8299', fontSize: '9', fontFamily: 'IBM Plex Mono' }, 'Per fill-up'),
+        h('line', { x1: legX, y1: legY2, x2: legX + 16, y2: legY2, stroke: '#f5a623', strokeWidth: '2.5' }),
+        h('text', { x: legX + 21, y: legY2 + 3, fill: '#7a8299', fontSize: '9', fontFamily: 'IBM Plex Mono' }, '10-tank avg')
+      ) : null
     )
   );
 }
@@ -225,10 +273,54 @@ function BarChart(props) {
   );
 }
 
+// ── COST / MILE LINE CHART ──────────────────────────────────────────────────────
+function CostPerMileChart(props) {
+  const data = props.entries.slice()
+    .filter(function(e){ return e.totalPrice != null && e.tripMiles != null && e.tripMiles > 0; })
+    .map(function(e){ return { date: e.date, cpm: parseFloat((e.totalPrice / e.tripMiles).toFixed(3)) }; })
+    .sort(function(a,b){return a.date.localeCompare(b.date);}).slice(-20);
+  if (data.length < 2) return h('div', { className: 'chart-empty' }, 'Add more fill-ups to see cost trend');
+  const vals = data.map(function(d){return d.cpm;});
+  let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if (lo === hi) { lo = lo * 0.9; hi = hi * 1.1 || 0.001; }
+  const min = lo * 0.9, max = hi * 1.1;
+  const W = 600, H = 120, PL = 46, PR = 8, PT = 12, PB = 24;
+  const iW = W - PL - PR, iH = H - PT - PB;
+  function yOf(v){ return PT + iH - ((v - min) / (max - min)) * iH; }
+  const pts = data.map(function(d, i){
+    return { x: PL + (i / (data.length - 1)) * iW, y: yOf(d.cpm), d: d };
+  });
+  const lineD = smoothPath(pts);
+  const areaD = lineD + ' L' + pts[pts.length-1].x.toFixed(2) + ',' + (H-PB) + ' L' + pts[0].x.toFixed(2) + ',' + (H-PB) + ' Z';
+  const avg = vals.reduce(function(a,b){return a+b;},0) / vals.length;
+  const avgY = yOf(avg);
+  return h('div', { className: 'chart-wrap' },
+    h('svg', { className: 'chart', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
+      h('defs', null,
+        h('linearGradient', { id: 'cpmGrad', x1: '0', y1: '0', x2: '0', y2: '1' },
+          h('stop', { offset: '0%', stopColor: '#3ecfcf', stopOpacity: '0.28' }),
+          h('stop', { offset: '100%', stopColor: '#3ecfcf', stopOpacity: '0.02' })
+        )
+      ),
+      // Y axis min/max labels at the left edge
+      h('text', { x: 4, y: PT + 4, fill: '#7a8299', fontSize: '9', fontFamily: 'IBM Plex Mono' }, '$' + hi.toFixed(3)),
+      h('text', { x: 4, y: H - PB, fill: '#7a8299', fontSize: '9', fontFamily: 'IBM Plex Mono' }, '$' + lo.toFixed(3)),
+      h('line', { x1: PL, y1: avgY, x2: W-PR, y2: avgY, stroke: '#3ecfcf', strokeWidth: '1', strokeDasharray: '4 4', opacity: '0.5' }),
+      h('path', { d: areaD, fill: 'url(#cpmGrad)' }),
+      h('path', { d: lineD, fill: 'none', stroke: '#3ecfcf', strokeWidth: '2', strokeLinecap: 'round', strokeLinejoin: 'round' }),
+      pts.map(function(p, i){ return h('circle', { key: i, cx: p.x, cy: p.y, r: '2.5', fill: '#3ecfcf' }); }),
+      h('text', { x: W-PR, y: avgY - 4, textAnchor: 'end', fill: '#3ecfcf', fontSize: '10', fontFamily: 'IBM Plex Mono' }, 'avg $' + avg.toFixed(3) + '/mi'),
+      h('text', { x: pts[0].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[0].d.date)),
+      h('text', { x: pts[pts.length-1].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[pts.length-1].d.date))
+    )
+  );
+}
+
 // ── ADD ENTRY FORM ────────────────────────────────────────────────────────────
 function AddEntryForm(props) {
   const today = new Date().toISOString().split('T')[0];
-  const blank = { date: today, tripMiles: '', totalMiles: '', gallons: '', pricePerGallon: '', fuelType: '', partial: false, notes: '', lat: null, lng: null, geoStatus: '' };
+  const knownDrivers = props.drivers || [];
+  const blank = { date: today, tripMiles: '', totalMiles: '', gallons: '', pricePerGallon: '', fuelType: '', partial: false, notes: '', driver: props.defaultDriver || '', driverNew: '', lat: null, lng: null, geoStatus: '' };
   const state = useState(blank); const f = state[0], setF = state[1];
   function set(k, v){ setF(function(prev){ var n = Object.assign({}, prev); n[k]=v; return n; }); }
   function captureLocation() {
@@ -249,6 +341,7 @@ function AddEntryForm(props) {
   const previewMpg = (!f.partial && tripMilesNum > 0 && gallonsNum > 0)
     ? parseFloat((tripMilesNum / gallonsNum).toFixed(2)) : null;
   const canSave = f.date && !isNaN(tripMilesNum) && tripMilesNum > 0 && !isNaN(gallonsNum) && gallonsNum > 0;
+  const resolvedDriver = (f.driver === '__new__' ? (f.driverNew || '').trim() : f.driver);
   function handleAdd() {
     if (!canSave) return;
     const entry = {
@@ -258,10 +351,12 @@ function AddEntryForm(props) {
       totalPrice: totalPrice ? parseFloat(totalPrice.toFixed(2)) : null,
       fuelType: f.fuelType, partial: !!f.partial,
       notes: f.notes ? f.notes.trim() : '',
+      driver: resolvedDriver,
       lat: f.lat, lng: f.lng
     };
     props.onAdd(entry);
-    setF(Object.assign({}, blank, { date: f.date, fuelType: f.fuelType }));
+    if (resolvedDriver && props.onDriverUsed) props.onDriverUsed(resolvedDriver);
+    setF(Object.assign({}, blank, { date: f.date, fuelType: f.fuelType, driver: resolvedDriver || '', driverNew: '' }));
   }
   function field(label, key, ph) {
     return h('div', { className: 'form-group' },
@@ -292,6 +387,19 @@ function AddEntryForm(props) {
           FUEL_TYPES.map(function(t){ return h('option', { key: t.value, value: t.value }, t.label); })
         )
       ),
+      h('div', { className: 'form-group' },
+        h('label', null, 'Driver'),
+        h('select', { value: f.driver, onChange: function(e){ set('driver', e.target.value); } },
+          h('option', { value: '' }, '—'),
+          knownDrivers.map(function(d){ return h('option', { key: d, value: d }, d); }),
+          h('option', { value: '__new__' }, 'Add new driver…')
+        )
+      ),
+      f.driver === '__new__' ? h('div', { className: 'form-group full' },
+        h('label', null, 'New Driver Name'),
+        h('input', { type: 'text', placeholder: 'e.g. Alex', value: f.driverNew, autoFocus: true,
+          onChange: function(e){ set('driverNew', e.target.value); } })
+      ) : null,
       h('div', { className: 'form-group' },
         h('label', null, 'Fill Type'),
         h('div', { className: 'toggle-row' },
@@ -357,6 +465,22 @@ function Dashboard(props) {
   const yearMiles = yearEntries.reduce(function(a,e){return a+(e.tripMiles||0);},0);
   const yearMpgs = yearEntries.map(function(e){return e.mpg;}).filter(function(m){return m != null;});
   const yearAvgMpg = yearMpgs.length ? yearMpgs.reduce(function(a,b){return a+b;},0)/yearMpgs.length : null;
+  // ── driver comparison (avg MPG per driver) ──
+  const driverGroups = {};
+  ve.forEach(function(e){
+    const k = e.driver || '—';
+    if (!driverGroups[k]) driverGroups[k] = [];
+    if (e.mpg != null) driverGroups[k].push(e.mpg);
+  });
+  const driverKeys = Object.keys(driverGroups);
+  const driverStats = driverKeys.map(function(k){
+    const ms = driverGroups[k];
+    return { driver: k, avgMpg: ms.length ? ms.reduce(function(a,b){return a+b;},0)/ms.length : null };
+  }).sort(function(a,b){
+    if (a.avgMpg == null) return 1;
+    if (b.avgMpg == null) return -1;
+    return b.avgMpg - a.avgMpg;
+  });
   function statCell(label, val, cls, unit) {
     return h('div', { className: 'stat-cell' },
       h('div', { className: 'stat-label' }, label),
@@ -379,6 +503,18 @@ function Dashboard(props) {
         (trendUp ? '↑' : '↓') + ' Recent avg ' + fmt(recent5avg) + ' mpg vs ' + fmt(avgMpg) + ' mpg lifetime'
       ) : null
     ),
+    driverKeys.length > 1 ? h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Driver Comparison — ' + props.vehicle),
+      h('div', { className: 'stat-grid' },
+        driverStats.map(function(d){
+          return h('div', { key: d.driver, className: 'stat-cell' },
+            h('div', { className: 'stat-label' }, d.driver),
+            h('div', { className: 'stat-value ' + (d.avgMpg ? mpgColor(d.avgMpg) : '') }, fmt(d.avgMpg)),
+            h('div', { className: 'stat-unit' }, 'avg mpg')
+          );
+        })
+      )
+    ) : null,
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, curYear + ' Year to Date — ' + props.vehicle),
       h('div', { className: 'stat-grid' },
@@ -464,10 +600,33 @@ function Monthly(props) {
     if (b.avgMpg == null) return -1;
     return b.avgMpg - a.avgMpg;
   });
+  // ── per-driver breakdown ──
+  const driverGroups = {};
+  ve.forEach(function(e){
+    const k = e.driver || '—';
+    if (!driverGroups[k]) driverGroups[k] = { key: k, mpgs: [], spent: 0, miles: 0, fills: 0 };
+    if (e.mpg != null) driverGroups[k].mpgs.push(e.mpg);
+    driverGroups[k].spent += e.totalPrice || 0;
+    driverGroups[k].miles += e.tripMiles || 0;
+    driverGroups[k].fills += 1;
+  });
+  const driverRows = Object.keys(driverGroups).map(function(k){
+    const g = driverGroups[k];
+    return {
+      key: k,
+      avgMpg: g.mpgs.length ? g.mpgs.reduce(function(a,b){return a+b;},0)/g.mpgs.length : null,
+      costPerMile: g.miles > 0 ? g.spent / g.miles : null,
+      miles: g.miles, spent: g.spent, fills: g.fills
+    };
+  }).sort(function(a,b){ return b.fills - a.fills; });
   return h(React.Fragment, null,
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Spend / Month (last 6) — ' + props.vehicle),
       h(BarChart, { rows: recentMonths })
+    ),
+    h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Cost / Mile Trend — ' + props.vehicle),
+      h(CostPerMileChart, { entries: ve })
     ),
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'MPG by Fuel Type'),
@@ -508,6 +667,27 @@ function Monthly(props) {
           }))
         )
       )
+    ),
+    h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Driver Breakdown — ' + props.vehicle),
+      h('div', { style: { overflowX: 'auto' } },
+        h('table', { className: 'history-table' },
+          h('thead', null, h('tr', null,
+            h('th', null, 'Driver'), h('th', null, 'Fills'), h('th', null, 'Miles'),
+            h('th', null, 'Spent'), h('th', null, 'Avg MPG'), h('th', null, '$/mi')
+          )),
+          h('tbody', null, driverRows.map(function(r){
+            return h('tr', { key: r.key },
+              h('td', null, r.key),
+              h('td', null, String(r.fills)),
+              h('td', null, Math.round(r.miles).toLocaleString()),
+              h('td', null, '$' + fmt(r.spent)),
+              h('td', { className: 'mpg-cell ' + mpgColor(r.avgMpg) }, fmt(r.avgMpg)),
+              h('td', null, r.costPerMile ? '$' + fmt(r.costPerMile, 3) : '—')
+            );
+          }))
+        )
+      )
     )
   );
 }
@@ -532,7 +712,7 @@ function History(props) {
       h('table', { className: 'history-table' },
         h('thead', null, h('tr', null,
           h('th', null, 'Date'), h('th', null, 'Trip'), h('th', null, 'Odo'), h('th', null, 'Gal'),
-          h('th', null, 'PPG'), h('th', null, 'Total'), h('th', null, 'Fuel'), h('th', null, 'MPG'), h('th', null, '')
+          h('th', null, 'PPG'), h('th', null, 'Total'), h('th', null, 'Fuel'), h('th', null, 'Driver'), h('th', null, 'MPG'), h('th', null, '')
         )),
         h('tbody', null, ve.map(function(e){
           const armed = armedId === e.id;
@@ -545,6 +725,7 @@ function History(props) {
               h('td', null, e.pricePerGallon ? '$' + fmt(e.pricePerGallon) : '—'),
               h('td', null, e.totalPrice ? '$' + fmt(e.totalPrice) : '—'),
               h('td', { style: { fontSize: 10, color: 'var(--text-muted)' } }, e.fuelType ? fuelLabel(e.fuelType) : '—'),
+              h('td', { style: { fontSize: 11, color: 'var(--text-muted)' } }, e.driver ? e.driver : '—'),
               h('td', { className: 'mpg-cell ' + mpgColor(e.mpg) }, e.partial ? '—' : fmt(e.mpg)),
               h('td', null, h('button', {
                 className: 'delete-btn' + (armed ? ' armed' : ''),
@@ -555,7 +736,7 @@ function History(props) {
           ];
           if (e.notes) {
             rows.push(h('tr', { key: e.id + '-notes', className: 'notes-row' },
-              h('td', { colSpan: 9, className: 'notes-cell' }, '🗒 ' + e.notes)
+              h('td', { colSpan: 10, className: 'notes-cell' }, '🗒 ' + e.notes)
             ));
           }
           return rows;
@@ -633,7 +814,7 @@ function downloadFile(filename, content, mime) {
   URL.revokeObjectURL(url);
 }
 function toCSV(entries) {
-  const headers = ['Date','Vehicle','Trip Miles','Total Odometer','Gallons','Price Per Gallon','Total Cost','Fuel Type','Partial Fill','MPG','Notes','Latitude','Longitude'];
+  const headers = ['Date','Vehicle','Trip Miles','Total Odometer','Gallons','Price Per Gallon','Total Cost','Fuel Type','Driver','Partial Fill','MPG','Notes','Latitude','Longitude'];
   const rows = entries.slice().sort(function(a,b){return a.date.localeCompare(b.date);}).map(function(e){
     return [
       e.date, e.vehicle,
@@ -643,6 +824,7 @@ function toCSV(entries) {
       e.pricePerGallon != null ? e.pricePerGallon : '',
       e.totalPrice != null ? e.totalPrice : '',
       e.fuelType ? fuelLabel(e.fuelType) : '',
+      e.driver != null ? e.driver : '',
       e.partial ? 'Yes' : 'No',
       (e.partial || e.mpg == null) ? '' : e.mpg,
       e.notes != null ? e.notes : '',
@@ -794,14 +976,15 @@ function App() {
   const [syncStatus, setSyncStatus] = useState('syncing');
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState(function(){ return loadPrefs().theme || 'midnight'; });
+  const [lastDriver, setLastDriver] = useState(function(){ return loadPrefs().lastDriver || ''; });
 
   // keep a ref so async callbacks always see current entries without stale closure
   const entriesRef = useRef(entries);
   useEffect(function(){ entriesRef.current = entries; }, [entries]);
 
   useEffect(function(){
-    savePrefs({ vehicles: vehicles, activeVehicle: activeVehicle, theme: theme });
-  }, [vehicles, activeVehicle, theme]);
+    savePrefs({ vehicles: vehicles, activeVehicle: activeVehicle, theme: theme, lastDriver: lastDriver });
+  }, [vehicles, activeVehicle, theme, lastDriver]);
 
   // Apply the selected color theme to the document root
   useEffect(function(){
@@ -863,11 +1046,13 @@ function App() {
 
   const mpgMap = computeMpg(entries);
   const entriesWithMpg = entries.map(function(e){ return Object.assign({}, e, { mpg: mpgMap[e.id] }); });
+  const knownDrivers = Array.from(new Set(entries.map(function(e){ return e.driver; }).filter(Boolean))).sort();
 
   function handleAddEntry(entry) {
     const cur = entriesRef.current;
     const newEntries = [entry].concat(cur);
     const mpg = computeMpg(newEntries)[entry.id];
+    if (entry.driver) setLastDriver(entry.driver);
     setEntries(newEntries);
     saveCache(newEntries);
     setSyncStatus('syncing');
@@ -1012,7 +1197,7 @@ function App() {
         h('div', { className: 'vehicle-chip add-btn', onClick: function(){ setShowAddVehicle(true); } }, '+ Add vehicle')
       ),
       tab === 'dashboard' ? h(Dashboard, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
-      tab === 'add' ? h(AddEntryForm, { vehicle: activeVehicle, onAdd: function(e){ handleAddEntry(e); setTab('dashboard'); } }) : null,
+      tab === 'add' ? h(AddEntryForm, { vehicle: activeVehicle, drivers: knownDrivers, defaultDriver: lastDriver, onDriverUsed: setLastDriver, onAdd: function(e){ handleAddEntry(e); setTab('dashboard'); } }) : null,
       tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
       tab === 'history' ? h(History, { entries: entriesWithMpg, vehicle: activeVehicle, onDelete: handleDeleteEntry }) : null,
       tab === 'map' ? h(MapView, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
