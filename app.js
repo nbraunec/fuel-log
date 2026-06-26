@@ -46,11 +46,72 @@ function fromSb(row) {
   };
 }
 
+// ── MAPPERS: fixed_costs ───────────────────────────────────────────────────────
+function fromSbFixedCost(row) {
+  return {
+    id: row.id, vehicle: row.vehicle, category: row.category,
+    label: row.label || '', amount: row.amount,
+    frequency: row.frequency || 'monthly',
+    startDate: row.start_date || '', endDate: row.end_date || ''
+  };
+}
+function toSbFixedCost(fc) {
+  return {
+    id: fc.id, vehicle: fc.vehicle, category: fc.category,
+    label: fc.label ? fc.label : null, amount: fc.amount,
+    frequency: fc.frequency || 'monthly',
+    start_date: fc.startDate ? fc.startDate : null,
+    end_date: fc.endDate ? fc.endDate : null
+  };
+}
+
+// ── MAPPERS: maintenance_log (read-only in Phase 1) ────────────────────────────
+function fromSbMaint(row) {
+  return {
+    id: row.id, vehicle: row.vehicle, date: row.date, odometer: row.odometer,
+    category: row.category, description: row.description || '', cost: row.cost,
+    shop: row.shop || '', nextDueMiles: row.next_due_miles, nextDueDate: row.next_due_date || ''
+  };
+}
+
+// ── FIXED COST CATEGORIES / FREQUENCIES ────────────────────────────────────────
+const FIXED_CATEGORIES = [
+  { value: 'payment', label: 'Loan / Lease' },
+  { value: 'insurance', label: 'Insurance' },
+  { value: 'registration', label: 'Registration' },
+  { value: 'parking', label: 'Parking' },
+  { value: 'other', label: 'Other' }
+];
+function fixedCatLabel(v) {
+  const c = FIXED_CATEGORIES.find(function(x){ return x.value === v; });
+  return c ? c.label : 'Other';
+}
+const FREQUENCIES = [
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'biannual', label: 'Every 6 Months' },
+  { value: 'annual', label: 'Annual' }
+];
+function freqLabel(v) {
+  const f = FREQUENCIES.find(function(x){ return x.value === v; });
+  return f ? f.label : 'Monthly';
+}
+// Pure helper: monthly-equivalent of a recurring cost
+function monthlyEquivalent(amount, frequency) {
+  const a = amount || 0;
+  if (frequency === 'biannual') return a / 6;
+  if (frequency === 'annual') return a / 12;
+  return a; // monthly (and default)
+}
+
 // ── STORAGE ───────────────────────────────────────────────────────────────────
 const PREFS_KEY   = 'fuellog_prefs';
 const CACHE_KEY   = 'fuellog_cache';
 const PENDING_KEY = 'fuellog_pending';
 const LEGACY_KEY  = 'fuellog_v1';
+const FIXED_KEY   = 'fuellog_fixed_cache';
+const MAINT_KEY   = 'fuellog_maint_cache';
+function loadJSON(key) { try { const r = localStorage.getItem(key); if (r) return JSON.parse(r); } catch (e) {} return []; }
+function saveJSON(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {} }
 
 function loadPrefs() {
   try { const r = localStorage.getItem(PREFS_KEY); if (r) return JSON.parse(r); } catch (e) {}
@@ -316,6 +377,46 @@ function CostPerMileChart(props) {
   );
 }
 
+// ── STACKED COST BAR CHART (fixed + maintenance + fuel) ─────────────────────────
+function StackedCostChart(props) {
+  const rows = props.rows; // [{ key, label, fixed, maint, fuel }]
+  if (!rows.length) return h('div', { className: 'chart-empty' }, 'No data yet');
+  const totals = rows.map(function(r){ return r.fixed + r.maint + r.fuel; });
+  const max = Math.max.apply(null, totals) || 1;
+  const W = 600, H = 150, PB = 22, PT = 10, gap = 6;
+  const bw = (W - gap * (rows.length - 1)) / rows.length;
+  function segH(v){ return ((H - PB - PT) * v) / max; }
+  return h('div', null,
+    h('div', { className: 'chart-wrap', style: { height: 170 } },
+      h('svg', { className: 'chart', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
+        rows.map(function(r, i){
+          const x = i * (bw + gap);
+          const hFixed = segH(r.fixed), hMaint = segH(r.maint), hFuel = segH(r.fuel);
+          const yFixed = H - PB - hFixed;
+          const yMaint = yFixed - hMaint;
+          const yFuel = yMaint - hFuel;
+          const total = r.fixed + r.maint + r.fuel;
+          return h('g', { key: r.key },
+            h('rect', { x: x, y: yFixed, width: bw, height: Math.max(hFixed, 0), fill: '#7a8299', opacity: 0.9 }),
+            h('rect', { x: x, y: yMaint, width: bw, height: Math.max(hMaint, 0), fill: '#3ecfcf', opacity: 0.9 }),
+            h('rect', { x: x, y: yFuel, width: bw, height: Math.max(hFuel, 0), rx: 2, fill: '#f5a623', opacity: 0.9 }),
+            h('text', { x: x + bw/2, y: yFuel - 3, textAnchor: 'middle', fill: '#e8eaf0', fontSize: '10', fontFamily: 'IBM Plex Mono' }, '$' + Math.round(total)),
+            h('text', { x: x + bw/2, y: H - 6, textAnchor: 'middle', fill: '#7a8299', fontSize: '10', fontFamily: 'IBM Plex Mono' }, r.label.split(' ')[0])
+          );
+        })
+      )
+    ),
+    h('div', { style: { display: 'flex', gap: 14, marginTop: 8, fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-muted)', flexWrap: 'wrap' } },
+      [['Fixed','#7a8299'],['Maintenance','#3ecfcf'],['Fuel','#f5a623']].map(function(p){
+        return h('span', { key: p[0], style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
+          h('span', { style: { width: 10, height: 10, borderRadius: 2, background: p[1], display: 'inline-block' } }),
+          p[0]
+        );
+      })
+    )
+  );
+}
+
 // ── ADD ENTRY FORM ────────────────────────────────────────────────────────────
 function AddEntryForm(props) {
   const today = new Date().toISOString().split('T')[0];
@@ -481,6 +582,20 @@ function Dashboard(props) {
     if (b.avgMpg == null) return -1;
     return b.avgMpg - a.avgMpg;
   });
+  // ── TCO: monthly cost breakdown (current calendar month) ──
+  const fixedCosts = props.fixedCosts || [];
+  const maintenanceLogs = props.maintenanceLogs || [];
+  const curMonthKey = new Date().toISOString().slice(0, 7);
+  const fixedMonthly = fixedCosts.reduce(function(a, c){ return a + monthlyEquivalent(c.amount, c.frequency); }, 0);
+  const monthEntries = ve.filter(function(e){ return monthKey(e.date) === curMonthKey; });
+  const fuelThisMonth = monthEntries.reduce(function(a, e){ return a + (e.totalPrice || 0); }, 0);
+  const milesThisMonth = monthEntries.reduce(function(a, e){ return a + (e.tripMiles || 0); }, 0);
+  const hasMaint = maintenanceLogs.length > 0;
+  const maintThisMonth = maintenanceLogs
+    .filter(function(m){ return monthKey(m.date) === curMonthKey; })
+    .reduce(function(a, m){ return a + (m.cost || 0); }, 0);
+  const totalThisMonth = fixedMonthly + fuelThisMonth + (hasMaint ? maintThisMonth : 0);
+  const trueCostPerMile = milesThisMonth > 0 ? totalThisMonth / milesThisMonth : null;
   function statCell(label, val, cls, unit) {
     return h('div', { className: 'stat-cell' },
       h('div', { className: 'stat-label' }, label),
@@ -503,6 +618,17 @@ function Dashboard(props) {
         (trendUp ? '↑' : '↓') + ' Recent avg ' + fmt(recent5avg) + ' mpg vs ' + fmt(avgMpg) + ' mpg lifetime'
       ) : null
     ),
+    fixedCosts.length > 0 ? h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Monthly Cost Breakdown — ' + props.vehicle),
+      h('div', { className: 'stat-grid' },
+        statCell('Fixed Costs', '$' + fmt(fixedMonthly), '', '/ mo'),
+        statCell('Fuel This Month', '$' + fmt(fuelThisMonth), '', curMonthKey),
+        statCell('Maintenance', hasMaint ? '$' + fmt(maintThisMonth) : '—', '', 'this month'),
+        statCell('Total This Month', '$' + fmt(totalThisMonth), 'accent', curMonthKey),
+        statCell('Miles This Month', milesThisMonth > 0 ? Math.round(milesThisMonth).toLocaleString() : '—', '', 'this month'),
+        statCell('True Cost / Mile', trueCostPerMile != null ? '$' + fmt(trueCostPerMile, 3) : '—', 'green', 'all-in')
+      )
+    ) : null,
     driverKeys.length > 1 ? h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Driver Comparison — ' + props.vehicle),
       h('div', { className: 'stat-grid' },
@@ -619,11 +745,27 @@ function Monthly(props) {
       miles: g.miles, spent: g.spent, fills: g.fills
     };
   }).sort(function(a,b){ return b.fills - a.fills; });
+  // ── stacked total cost per month (fixed + maintenance + fuel) ──
+  const fixedCosts = props.fixedCosts || [];
+  const maintenanceLogs = props.maintenanceLogs || [];
+  const fixedMonthly = fixedCosts.reduce(function(a, c){ return a + monthlyEquivalent(c.amount, c.frequency); }, 0);
+  const maintByMonth = {};
+  maintenanceLogs.forEach(function(m){
+    const k = monthKey(m.date); if (!k) return;
+    maintByMonth[k] = (maintByMonth[k] || 0) + (m.cost || 0);
+  });
+  const stackedRows = months.slice(-6).map(function(m){
+    return { key: m.key, label: monthLabel(m.key), fixed: fixedMonthly, maint: maintByMonth[m.key] || 0, fuel: m.spent };
+  });
   return h(React.Fragment, null,
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Spend / Month (last 6) — ' + props.vehicle),
       h(BarChart, { rows: recentMonths })
     ),
+    fixedCosts.length > 0 ? h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Total Cost / Month (last 6) — ' + props.vehicle),
+      h(StackedCostChart, { rows: stackedRows })
+    ) : null,
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Cost / Mile Trend — ' + props.vehicle),
       h(CostPerMileChart, { entries: ve })
@@ -966,6 +1108,115 @@ function AddVehicleModal(props) {
   );
 }
 
+// ── COSTS (fixed cost manager) ──────────────────────────────────────────────────
+function CostsView(props) {
+  const vc = props.fixedCosts; // already filtered to active vehicle
+  const blank = { category: 'payment', label: '', amount: '', frequency: 'monthly', startDate: '' };
+  const fs = useState(blank); const f = fs[0], setF = fs[1];
+  function set(k, v){ setF(function(prev){ var n = Object.assign({}, prev); n[k] = v; return n; }); }
+  const amountNum = parseFloat(f.amount);
+  const canAdd = f.category && !isNaN(amountNum) && amountNum > 0;
+  function handleAdd() {
+    if (!canAdd) return;
+    props.onAdd({
+      id: Date.now(), vehicle: props.vehicle, category: f.category,
+      label: f.label ? f.label.trim() : '', amount: parseFloat(amountNum.toFixed(2)),
+      frequency: f.frequency, startDate: f.startDate || '', endDate: ''
+    });
+    setF(Object.assign({}, blank, { category: f.category, frequency: f.frequency }));
+  }
+  const totalMonthly = vc.reduce(function(a, c){ return a + monthlyEquivalent(c.amount, c.frequency); }, 0);
+  // per-category monthly equivalents for the summary card
+  const catTotals = { payment: 0, insurance: 0, registration: 0, otherFixed: 0 };
+  const catHas = { payment: false, insurance: false, registration: false, otherFixed: false };
+  vc.forEach(function(c){
+    const me = monthlyEquivalent(c.amount, c.frequency);
+    if (c.category === 'payment') { catTotals.payment += me; catHas.payment = true; }
+    else if (c.category === 'insurance') { catTotals.insurance += me; catHas.insurance = true; }
+    else if (c.category === 'registration') { catTotals.registration += me; catHas.registration = true; }
+    else { catTotals.otherFixed += me; catHas.otherFixed = true; }
+  });
+  function statCell(label, val, cls, unit) {
+    return h('div', { className: 'stat-cell' },
+      h('div', { className: 'stat-label' }, label),
+      h('div', { className: 'stat-value ' + (cls||'') }, val),
+      h('div', { className: 'stat-unit' }, unit)
+    );
+  }
+  const summaryCells = [];
+  if (catHas.payment) summaryCells.push(statCell('Payment', '$' + fmt(catTotals.payment), '', '/ mo'));
+  if (catHas.insurance) summaryCells.push(statCell('Insurance', '$' + fmt(catTotals.insurance), '', '/ mo'));
+  if (catHas.registration) summaryCells.push(statCell('Registration', '$' + fmt(catTotals.registration), '', '/ mo'));
+  if (catHas.otherFixed) summaryCells.push(statCell('Other Fixed', '$' + fmt(catTotals.otherFixed), '', '/ mo'));
+  summaryCells.push(statCell('Total Fixed / Mo', '$' + fmt(totalMonthly), 'accent', 'this vehicle'));
+
+  return h(React.Fragment, null,
+    h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Fixed Cost Manager — ' + props.vehicle),
+      vc.length === 0 ? h('div', { className: 'no-data' }, 'No fixed costs added yet') :
+      h('div', { style: { overflowX: 'auto' } },
+        h('table', { className: 'history-table' },
+          h('thead', null, h('tr', null,
+            h('th', null, 'Category'), h('th', null, 'Label'), h('th', null, 'Amount'),
+            h('th', null, 'Frequency'), h('th', null, 'Monthly Equiv'), h('th', null, '')
+          )),
+          h('tbody', null,
+            vc.map(function(c){
+              return h('tr', { key: c.id },
+                h('td', null, fixedCatLabel(c.category)),
+                h('td', { style: { color: 'var(--text-muted)' } }, c.label || '—'),
+                h('td', null, '$' + fmt(c.amount)),
+                h('td', null, freqLabel(c.frequency)),
+                h('td', { style: { fontFamily: 'var(--mono)', fontWeight: 600 } }, '$' + fmt(monthlyEquivalent(c.amount, c.frequency))),
+                h('td', null, h('button', { className: 'delete-btn', title: 'Delete', onClick: function(){ if (confirm('Delete this fixed cost?')) props.onDelete(c.id); } }, '×'))
+              );
+            }).concat([
+              h('tr', { key: '__total', style: { borderTop: '2px solid var(--border)' } },
+                h('td', { colSpan: 4, style: { color: 'var(--text-muted)', fontFamily: 'var(--mono)' } }, 'Total monthly fixed cost'),
+                h('td', { colSpan: 2, style: { fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--accent)' } }, '$' + fmt(totalMonthly))
+              )
+            ])
+          )
+        )
+      ),
+      // ── inline add form ──
+      h('div', { className: 'form-grid', style: { marginTop: 14 } },
+        h('div', { className: 'form-group' },
+          h('label', null, 'Category'),
+          h('select', { value: f.category, onChange: function(e){ set('category', e.target.value); } },
+            FIXED_CATEGORIES.map(function(c){ return h('option', { key: c.value, value: c.value }, c.label); })
+          )
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Frequency'),
+          h('select', { value: f.frequency, onChange: function(e){ set('frequency', e.target.value); } },
+            FREQUENCIES.map(function(c){ return h('option', { key: c.value, value: c.value }, c.label); })
+          )
+        ),
+        h('div', { className: 'form-group full' },
+          h('label', null, 'Label'),
+          h('input', { type: 'text', placeholder: 'e.g. State Farm full coverage', value: f.label, onChange: function(e){ set('label', e.target.value); } })
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Amount ($)'),
+          h('input', { type: 'number', inputMode: 'decimal', placeholder: '0.00', value: f.amount, onChange: function(e){ set('amount', e.target.value); } })
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Start Date'),
+          h('input', { type: 'date', value: f.startDate, onChange: function(e){ set('startDate', e.target.value); } })
+        )
+      ),
+      h('div', { className: 'btn-row', style: { marginTop: 12 } },
+        h('button', { className: 'btn btn-primary btn-full', disabled: !canAdd, onClick: handleAdd }, 'Add Cost')
+      )
+    ),
+    vc.length > 0 ? h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Monthly Fixed Cost Summary — ' + props.vehicle),
+      h('div', { className: 'stat-grid' }, summaryCells)
+    ) : null
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────────────────
 function App() {
   const [entries, setEntries] = useState(loadCache);
@@ -977,6 +1228,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState(function(){ return loadPrefs().theme || 'midnight'; });
   const [lastDriver, setLastDriver] = useState(function(){ return loadPrefs().lastDriver || ''; });
+  const [fixedCosts, setFixedCosts] = useState(function(){ return loadJSON(FIXED_KEY); });
+  const [maintenanceLogs, setMaintenanceLogs] = useState(function(){ return loadJSON(MAINT_KEY); });
 
   // keep a ref so async callbacks always see current entries without stale closure
   const entriesRef = useRef(entries);
@@ -993,9 +1246,28 @@ function App() {
 
   useEffect(function(){
     loadFromSupabase();
+    loadFixedCosts();
+    loadMaintenance();
     window.addEventListener('online', handleOnline);
     return function(){ window.removeEventListener('online', handleOnline); };
   }, []);
+
+  // Fixed costs + maintenance load independently of fill_ups so that a missing
+  // table (before the Phase 1 SQL is run) never breaks the main sync path.
+  function loadFixedCosts() {
+    return sb.from('fixed_costs').select('*').then(function(res){
+      if (res.error) throw res.error;
+      const mapped = res.data.map(fromSbFixedCost);
+      setFixedCosts(mapped); saveJSON(FIXED_KEY, mapped);
+    }).catch(function(err){ console.warn('[FuelLog] fixed_costs read failed (run Phase 1 SQL?):', err); });
+  }
+  function loadMaintenance() {
+    return sb.from('maintenance_log').select('*').then(function(res){
+      if (res.error) throw res.error;
+      const mapped = res.data.map(fromSbMaint);
+      setMaintenanceLogs(mapped); saveJSON(MAINT_KEY, mapped);
+    }).catch(function(err){ console.warn('[FuelLog] maintenance_log read failed (run Phase 1 SQL?):', err); });
+  }
 
   function loadFromSupabase() {
     setSyncStatus('syncing');
@@ -1026,6 +1298,7 @@ function App() {
 
   function handleOnline() {
     const pending = loadPending();
+    loadFixedCosts(); loadMaintenance();
     if (!pending.length) { loadFromSupabase(); return; }
     setSyncStatus('syncing');
     const failed = [];
@@ -1047,6 +1320,29 @@ function App() {
   const mpgMap = computeMpg(entries);
   const entriesWithMpg = entries.map(function(e){ return Object.assign({}, e, { mpg: mpgMap[e.id] }); });
   const knownDrivers = Array.from(new Set(entries.map(function(e){ return e.driver; }).filter(Boolean))).sort();
+
+  function handleAddFixedCost(fc) {
+    setFixedCosts(function(prev){ const next = prev.concat([fc]); saveJSON(FIXED_KEY, next); return next; });
+    setSyncStatus('syncing');
+    sb.from('fixed_costs').insert(toSbFixedCost(fc)).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(err){
+      console.warn('[FuelLog] fixed_costs insert failed:', err);
+      setSyncStatus('offline');
+    });
+  }
+  function handleDeleteFixedCost(id) {
+    setFixedCosts(function(prev){ const next = prev.filter(function(c){ return c.id !== id; }); saveJSON(FIXED_KEY, next); return next; });
+    setSyncStatus('syncing');
+    sb.from('fixed_costs').delete().eq('id', id).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(err){
+      console.warn('[FuelLog] fixed_costs delete failed:', err);
+      setSyncStatus('offline');
+    });
+  }
 
   function handleAddEntry(entry) {
     const cur = entriesRef.current;
@@ -1163,10 +1459,14 @@ function App() {
   const syncDotColor = { synced: '#34d399', syncing: '#f5a623', offline: '#f05252' }[syncStatus] || '#7a8299';
   const syncLabel = { synced: 'synced', syncing: 'syncing…', offline: 'offline' }[syncStatus] || '';
 
+  const vehicleFixed = fixedCosts.filter(function(c){ return c.vehicle === activeVehicle; });
+  const vehicleMaint = maintenanceLogs.filter(function(m){ return m.vehicle === activeVehicle; });
+
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'add', label: 'Add', icon: '⛽' },
     { id: 'monthly', label: 'Monthly', icon: '📅' },
+    { id: 'costs', label: 'Costs', icon: '💰' },
     { id: 'history', label: 'History', icon: '📜' },
     { id: 'map', label: 'Map', icon: '🗺️' },
     { id: 'settings', label: 'Settings', icon: '⚙️' }
@@ -1196,9 +1496,10 @@ function App() {
         }),
         h('div', { className: 'vehicle-chip add-btn', onClick: function(){ setShowAddVehicle(true); } }, '+ Add vehicle')
       ),
-      tab === 'dashboard' ? h(Dashboard, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
+      tab === 'dashboard' ? h(Dashboard, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint }) : null,
       tab === 'add' ? h(AddEntryForm, { vehicle: activeVehicle, drivers: knownDrivers, defaultDriver: lastDriver, onDriverUsed: setLastDriver, onAdd: function(e){ handleAddEntry(e); setTab('dashboard'); } }) : null,
-      tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
+      tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint }) : null,
+      tab === 'costs' ? h(CostsView, { vehicle: activeVehicle, fixedCosts: vehicleFixed, onAdd: handleAddFixedCost, onDelete: handleDeleteFixedCost }) : null,
       tab === 'history' ? h(History, { entries: entriesWithMpg, vehicle: activeVehicle, onDelete: handleDeleteEntry }) : null,
       tab === 'map' ? h(MapView, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
       tab === 'settings' ? h(Settings, {

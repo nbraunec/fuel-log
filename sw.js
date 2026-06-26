@@ -1,5 +1,5 @@
 // Fuel Log service worker — offline caching
-const CACHE = 'fuel-log-v7';
+const CACHE = 'fuel-log-v8';
 
 // Local app shell + the CDN React files (cached on first fetch).
 const PRECACHE = [
