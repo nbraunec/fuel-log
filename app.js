@@ -65,13 +65,38 @@ function toSbFixedCost(fc) {
   };
 }
 
-// ── MAPPERS: maintenance_log (read-only in Phase 1) ────────────────────────────
+// ── MAPPERS: maintenance_log ───────────────────────────────────────────────────
 function fromSbMaint(row) {
   return {
     id: row.id, vehicle: row.vehicle, date: row.date, odometer: row.odometer,
     category: row.category, description: row.description || '', cost: row.cost,
     shop: row.shop || '', nextDueMiles: row.next_due_miles, nextDueDate: row.next_due_date || ''
   };
+}
+function toSbMaint(m) {
+  return {
+    id: m.id, vehicle: m.vehicle, date: m.date,
+    odometer: m.odometer != null ? m.odometer : null,
+    category: m.category, description: m.description ? m.description : null,
+    cost: m.cost != null ? m.cost : null, shop: m.shop ? m.shop : null,
+    next_due_miles: m.nextDueMiles != null ? m.nextDueMiles : null,
+    next_due_date: m.nextDueDate ? m.nextDueDate : null
+  };
+}
+
+// ── MAINTENANCE CATEGORIES ─────────────────────────────────────────────────────
+const MAINT_CATEGORIES = [
+  { value: 'oil_change', label: 'Oil Change' },
+  { value: 'tires', label: 'Tires' },
+  { value: 'brakes', label: 'Brakes' },
+  { value: 'battery', label: 'Battery' },
+  { value: 'scheduled', label: 'Scheduled Service' },
+  { value: 'repair', label: 'Repair' },
+  { value: 'other', label: 'Other' }
+];
+function maintCatLabel(v) {
+  const c = MAINT_CATEGORIES.find(function(x){ return x.value === v; });
+  return c ? c.label : 'Other';
 }
 
 // ── FIXED COST CATEGORIES / FREQUENCIES ────────────────────────────────────────
@@ -596,6 +621,16 @@ function Dashboard(props) {
     .reduce(function(a, m){ return a + (m.cost || 0); }, 0);
   const totalThisMonth = fixedMonthly + fuelThisMonth + (hasMaint ? maintThisMonth : 0);
   const trueCostPerMile = milesThisMonth > 0 ? totalThisMonth / milesThisMonth : null;
+  const allTimeMaint = maintenanceLogs.reduce(function(a, m){ return a + (m.cost || 0); }, 0);
+  // ── maintenance reminder banners (mileage-based) ──
+  const latestOdo = ve.filter(function(e){ return e.totalMiles != null; }).reduce(function(mx, e){ return Math.max(mx, e.totalMiles); }, 0);
+  const dismissed = props.dismissed || { has: function(){ return false; } };
+  const banners = (latestOdo > 0 ? maintenanceLogs.filter(function(m){ return m.nextDueMiles != null; }).map(function(m){
+    const remaining = m.nextDueMiles - latestOdo;
+    if (remaining <= 0) return { id: m.id, level: 'red', text: maintCatLabel(m.category) + ' overdue by ' + Math.round(-remaining).toLocaleString() + ' miles' };
+    if (remaining <= 500) return { id: m.id, level: 'amber', text: maintCatLabel(m.category) + ' due in ' + Math.round(remaining).toLocaleString() + ' miles' };
+    return null;
+  }).filter(Boolean) : []).filter(function(b){ return !dismissed.has(b.id); });
   function statCell(label, val, cls, unit) {
     return h('div', { className: 'stat-cell' },
       h('div', { className: 'stat-label' }, label),
@@ -604,6 +639,12 @@ function Dashboard(props) {
     );
   }
   return h(React.Fragment, null,
+    banners.map(function(b){
+      return h('div', { key: b.id, className: 'reminder-banner ' + b.level },
+        h('span', null, (b.level === 'red' ? '⚠ ' : '🔧 ') + b.text),
+        h('button', { title: 'Dismiss', onClick: function(){ if (props.onDismiss) props.onDismiss(b.id); } }, '×')
+      );
+    }),
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Summary — ' + props.vehicle),
       h('div', { className: 'stat-grid' },
@@ -627,7 +668,10 @@ function Dashboard(props) {
         statCell('Total This Month', '$' + fmt(totalThisMonth), 'accent', curMonthKey),
         statCell('Miles This Month', milesThisMonth > 0 ? Math.round(milesThisMonth).toLocaleString() : '—', '', 'this month'),
         statCell('True Cost / Mile', trueCostPerMile != null ? '$' + fmt(trueCostPerMile, 3) : '—', 'green', 'all-in')
-      )
+      ),
+      maintenanceLogs.length > 0 ? h('div', { style: { marginTop: 10, fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--mono)' } },
+        'All-Time Maintenance: ', h('span', { style: { color: 'var(--text)', fontWeight: 600 } }, '$' + fmt(allTimeMaint))
+      ) : null
     ) : null,
     driverKeys.length > 1 ? h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Driver Comparison — ' + props.vehicle),
@@ -1217,6 +1261,149 @@ function CostsView(props) {
   );
 }
 
+// ── MAINTENANCE STATUS HELPER ──────────────────────────────────────────────────
+// Returns { rank, level, label } — rank: 0 OK, 1 Due Soon, 2 Overdue (worst wins)
+function maintStatus(m, latestOdo) {
+  let rank = 0;
+  if (m.nextDueMiles != null && latestOdo != null) {
+    if (latestOdo >= m.nextDueMiles) rank = Math.max(rank, 2);
+    else if (m.nextDueMiles - latestOdo <= 500) rank = Math.max(rank, 1);
+  }
+  if (m.nextDueDate) {
+    const due = new Date(m.nextDueDate + 'T00:00:00').getTime();
+    const now = Date.now();
+    const days = (due - now) / 86400000;
+    if (days < 0) rank = Math.max(rank, 2);
+    else if (days <= 30) rank = Math.max(rank, 1);
+  }
+  return rank === 2 ? { rank: rank, level: 'overdue', label: 'Overdue' }
+       : rank === 1 ? { rank: rank, level: 'soon', label: 'Due Soon' }
+       : { rank: rank, level: 'ok', label: 'OK' };
+}
+
+// ── MAINTENANCE TAB ─────────────────────────────────────────────────────────────
+function MaintenanceView(props) {
+  const vm = props.maintenanceLogs; // already filtered to active vehicle
+  const latestOdo = props.latestOdo;
+  const today = new Date().toISOString().split('T')[0];
+  const blank = { date: today, odometer: '', category: 'oil_change', description: '', cost: '', shop: '', nextDueMiles: '', nextDueDate: '' };
+  const fs = useState(blank); const f = fs[0], setF = fs[1];
+  function set(k, v){ setF(function(prev){ var n = Object.assign({}, prev); n[k] = v; return n; }); }
+  const canAdd = f.date && f.category;
+  function handleAdd() {
+    if (!canAdd) return;
+    props.onAdd({
+      id: Date.now(), vehicle: props.vehicle, date: f.date,
+      odometer: f.odometer !== '' ? parseFloat(f.odometer) : null,
+      category: f.category, description: f.description ? f.description.trim() : '',
+      cost: f.cost !== '' ? parseFloat(parseFloat(f.cost).toFixed(2)) : null,
+      shop: f.shop ? f.shop.trim() : '',
+      nextDueMiles: f.nextDueMiles !== '' ? parseFloat(f.nextDueMiles) : null,
+      nextDueDate: f.nextDueDate || ''
+    });
+    setF(Object.assign({}, blank, { date: f.date, category: f.category }));
+  }
+  // reminders: entries with a due mileage or date, sorted worst-first
+  const reminders = vm.filter(function(m){ return m.nextDueMiles != null || m.nextDueDate; })
+    .map(function(m){ return { m: m, status: maintStatus(m, latestOdo) }; })
+    .sort(function(a,b){ return b.status.rank - a.status.rank; });
+  const sortedHistory = vm.slice().sort(function(a,b){ return (b.date || '').localeCompare(a.date || ''); });
+  const totalSpend = vm.reduce(function(a, m){ return a + (m.cost || 0); }, 0);
+
+  return h(React.Fragment, null,
+    reminders.length > 0 ? h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Upcoming / Overdue Reminders — ' + props.vehicle),
+      h('div', { style: { overflowX: 'auto' } },
+        h('table', { className: 'history-table' },
+          h('thead', null, h('tr', null,
+            h('th', null, 'Service'), h('th', null, 'Due Date'), h('th', null, 'Due Mileage'), h('th', null, 'Status')
+          )),
+          h('tbody', null, reminders.map(function(r){
+            return h('tr', { key: r.m.id },
+              h('td', null, maintCatLabel(r.m.category)),
+              h('td', null, r.m.nextDueDate ? fmtDate(r.m.nextDueDate) : '—'),
+              h('td', null, r.m.nextDueMiles != null ? Math.round(r.m.nextDueMiles).toLocaleString() : '—'),
+              h('td', null, h('span', { className: 'status-badge ' + r.status.level }, r.status.label))
+            );
+          }))
+        )
+      )
+    ) : null,
+    h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Log Maintenance — ' + props.vehicle),
+      h('div', { className: 'form-grid' },
+        h('div', { className: 'form-group' },
+          h('label', null, 'Date'),
+          h('input', { type: 'date', value: f.date, onChange: function(e){ set('date', e.target.value); } })
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Odometer'),
+          h('input', { type: 'number', inputMode: 'decimal', placeholder: 'optional', value: f.odometer, onChange: function(e){ set('odometer', e.target.value); } })
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Category'),
+          h('select', { value: f.category, onChange: function(e){ set('category', e.target.value); } },
+            MAINT_CATEGORIES.map(function(c){ return h('option', { key: c.value, value: c.value }, c.label); })
+          )
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Cost ($)'),
+          h('input', { type: 'number', inputMode: 'decimal', placeholder: '0.00', value: f.cost, onChange: function(e){ set('cost', e.target.value); } })
+        ),
+        h('div', { className: 'form-group full' },
+          h('label', null, 'Description'),
+          h('input', { type: 'text', placeholder: 'e.g. Oil change + filter — Jiffy Lube', value: f.description, onChange: function(e){ set('description', e.target.value); } })
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Shop'),
+          h('input', { type: 'text', placeholder: 'optional', value: f.shop, onChange: function(e){ set('shop', e.target.value); } })
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Next Due Mileage'),
+          h('input', { type: 'number', inputMode: 'decimal', placeholder: 'optional', value: f.nextDueMiles, onChange: function(e){ set('nextDueMiles', e.target.value); } })
+        ),
+        h('div', { className: 'form-group' },
+          h('label', null, 'Next Due Date'),
+          h('input', { type: 'date', value: f.nextDueDate, onChange: function(e){ set('nextDueDate', e.target.value); } })
+        )
+      ),
+      h('div', { className: 'btn-row', style: { marginTop: 12 } },
+        h('button', { className: 'btn btn-primary btn-full', disabled: !canAdd, onClick: handleAdd }, 'Save Maintenance')
+      )
+    ),
+    h('div', { className: 'card' },
+      h('div', { className: 'card-title' }, 'Maintenance History — ' + props.vehicle + ' (' + vm.length + ')'),
+      vm.length === 0 ? h('div', { className: 'no-data' }, 'No maintenance logged yet') :
+      h('div', { style: { overflowX: 'auto' } },
+        h('table', { className: 'history-table' },
+          h('thead', null, h('tr', null,
+            h('th', null, 'Date'), h('th', null, 'Odo'), h('th', null, 'Category'),
+            h('th', null, 'Description'), h('th', null, 'Shop'), h('th', null, 'Cost'), h('th', null, '')
+          )),
+          h('tbody', null,
+            sortedHistory.map(function(m){
+              return h('tr', { key: m.id },
+                h('td', null, fmtDate(m.date)),
+                h('td', null, m.odometer != null ? Math.round(m.odometer).toLocaleString() : '—'),
+                h('td', null, maintCatLabel(m.category)),
+                h('td', { style: { color: 'var(--text-muted)' } }, m.description || '—'),
+                h('td', { style: { color: 'var(--text-muted)', fontSize: 11 } }, m.shop || '—'),
+                h('td', null, m.cost != null ? '$' + fmt(m.cost) : '—'),
+                h('td', null, h('button', { className: 'delete-btn', title: 'Delete', onClick: function(){ if (confirm('Delete this maintenance entry?')) props.onDelete(m.id); } }, '×'))
+              );
+            }).concat([
+              h('tr', { key: '__total', style: { borderTop: '2px solid var(--border)' } },
+                h('td', { colSpan: 5, style: { color: 'var(--text-muted)', fontFamily: 'var(--mono)' } }, 'Total maintenance spend'),
+                h('td', { colSpan: 2, style: { fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--accent)' } }, '$' + fmt(totalSpend))
+              )
+            ])
+          )
+        )
+      )
+    )
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────────────────
 function App() {
   const [entries, setEntries] = useState(loadCache);
@@ -1230,6 +1417,7 @@ function App() {
   const [lastDriver, setLastDriver] = useState(function(){ return loadPrefs().lastDriver || ''; });
   const [fixedCosts, setFixedCosts] = useState(function(){ return loadJSON(FIXED_KEY); });
   const [maintenanceLogs, setMaintenanceLogs] = useState(function(){ return loadJSON(MAINT_KEY); });
+  const [dismissedReminders, setDismissedReminders] = useState(function(){ return new Set(); });
 
   // keep a ref so async callbacks always see current entries without stale closure
   const entriesRef = useRef(entries);
@@ -1342,6 +1530,32 @@ function App() {
       console.warn('[FuelLog] fixed_costs delete failed:', err);
       setSyncStatus('offline');
     });
+  }
+
+  function handleAddMaintenance(m) {
+    setMaintenanceLogs(function(prev){ const next = prev.concat([m]); saveJSON(MAINT_KEY, next); return next; });
+    setSyncStatus('syncing');
+    sb.from('maintenance_log').insert(toSbMaint(m)).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(err){
+      console.warn('[FuelLog] maintenance_log insert failed:', err);
+      setSyncStatus('offline');
+    });
+  }
+  function handleDeleteMaintenance(id) {
+    setMaintenanceLogs(function(prev){ const next = prev.filter(function(m){ return m.id !== id; }); saveJSON(MAINT_KEY, next); return next; });
+    setSyncStatus('syncing');
+    sb.from('maintenance_log').delete().eq('id', id).then(function(r){
+      if (r.error) throw r.error;
+      setSyncStatus('synced');
+    }).catch(function(err){
+      console.warn('[FuelLog] maintenance_log delete failed:', err);
+      setSyncStatus('offline');
+    });
+  }
+  function handleDismissReminder(id) {
+    setDismissedReminders(function(prev){ const next = new Set(prev); next.add(id); return next; });
   }
 
   function handleAddEntry(entry) {
@@ -1461,12 +1675,16 @@ function App() {
 
   const vehicleFixed = fixedCosts.filter(function(c){ return c.vehicle === activeVehicle; });
   const vehicleMaint = maintenanceLogs.filter(function(m){ return m.vehicle === activeVehicle; });
+  const vehicleLatestOdo = entriesWithMpg
+    .filter(function(e){ return e.vehicle === activeVehicle && e.totalMiles != null; })
+    .reduce(function(mx, e){ return Math.max(mx, e.totalMiles); }, 0) || null;
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'add', label: 'Add', icon: '⛽' },
     { id: 'monthly', label: 'Monthly', icon: '📅' },
     { id: 'costs', label: 'Costs', icon: '💰' },
+    { id: 'maintenance', label: 'Maintenance', icon: '🔧' },
     { id: 'history', label: 'History', icon: '📜' },
     { id: 'map', label: 'Map', icon: '🗺️' },
     { id: 'settings', label: 'Settings', icon: '⚙️' }
@@ -1496,10 +1714,11 @@ function App() {
         }),
         h('div', { className: 'vehicle-chip add-btn', onClick: function(){ setShowAddVehicle(true); } }, '+ Add vehicle')
       ),
-      tab === 'dashboard' ? h(Dashboard, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint }) : null,
+      tab === 'dashboard' ? h(Dashboard, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint, dismissed: dismissedReminders, onDismiss: handleDismissReminder }) : null,
       tab === 'add' ? h(AddEntryForm, { vehicle: activeVehicle, drivers: knownDrivers, defaultDriver: lastDriver, onDriverUsed: setLastDriver, onAdd: function(e){ handleAddEntry(e); setTab('dashboard'); } }) : null,
       tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint }) : null,
       tab === 'costs' ? h(CostsView, { vehicle: activeVehicle, fixedCosts: vehicleFixed, onAdd: handleAddFixedCost, onDelete: handleDeleteFixedCost }) : null,
+      tab === 'maintenance' ? h(MaintenanceView, { vehicle: activeVehicle, maintenanceLogs: vehicleMaint, latestOdo: vehicleLatestOdo, onAdd: handleAddMaintenance, onDelete: handleDeleteMaintenance }) : null,
       tab === 'history' ? h(History, { entries: entriesWithMpg, vehicle: activeVehicle, onDelete: handleDeleteEntry }) : null,
       tab === 'map' ? h(MapView, { entries: entriesWithMpg, vehicle: activeVehicle }) : null,
       tab === 'settings' ? h(Settings, {

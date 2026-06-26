@@ -148,3 +148,13 @@ select { background-image: linear-gradient(45deg, transparent 50%, var(--text-mu
 .map-canvas { width:100%; height:340px; border-radius:8px; overflow:hidden; border:1px solid var(--border); }
 .leaflet-container { background:var(--surface2); font-family:var(--sans); }
 .leaflet-popup-content { font-family:var(--sans); font-size:13px; line-height:1.4; }
+
+/* ── Phase 2: maintenance reminders + status badges ── */
+.reminder-banner { display:flex; justify-content:space-between; align-items:center; gap:10px; border-radius:8px; padding:10px 14px; margin-bottom:10px; font-family:var(--mono); font-size:13px; }
+.reminder-banner.amber { background:rgba(245,166,35,0.12); border:1px solid rgba(245,166,35,0.4); color:var(--accent); }
+.reminder-banner.red { background:rgba(240,82,82,0.12); border:1px solid rgba(240,82,82,0.4); color:var(--red); }
+.reminder-banner button { background:none; border:none; color:inherit; cursor:pointer; font-size:18px; line-height:1; padding:0 2px; flex-shrink:0; }
+.status-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; font-family:var(--mono); letter-spacing:0.04em; }
+.status-badge.ok { background:rgba(52,211,153,0.15); color:var(--green); }
+.status-badge.soon { background:rgba(245,166,35,0.15); color:var(--accent); }
+.status-badge.overdue { background:rgba(240,82,82,0.15); color:var(--red); }
