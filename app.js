@@ -276,6 +276,42 @@ function smoothPath(pts) {
   return d;
 }
 
+// ── SHARED CHART CURSOR (tap/hover tooltip + crosshair) ─────────────────────────
+// Maps a pointer position to the nearest data index. Works for every chart because
+// they all use preserveAspectRatio="none", so pointer→viewBox is a linear stretch.
+function useChartCursor(pointXs, viewBoxW) {
+  const wrapRef = useRef(null);
+  const st = useState(null); const activeIndex = st[0], setActiveIndex = st[1];
+  function resolve(clientX) {
+    const el = wrapRef.current;
+    if (!el || !pointXs.length) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width) return;
+    const vbX = ((clientX - rect.left) / rect.width) * viewBoxW;
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < pointXs.length; i++) {
+      const dd = Math.abs(pointXs[i] - vbX);
+      if (dd < bestD) { bestD = dd; best = i; }
+    }
+    setActiveIndex(best);
+  }
+  const handlers = {
+    onMouseMove: function(e){ resolve(e.clientX); },
+    onMouseLeave: function(){ setActiveIndex(null); },
+    onTouchStart: function(e){ if (e.touches[0]) resolve(e.touches[0].clientX); },
+    onTouchMove: function(e){ if (e.touches[0]) resolve(e.touches[0].clientX); },
+    onTouchEnd: function(){ setActiveIndex(null); }
+  };
+  return { wrapRef: wrapRef, activeIndex: activeIndex, handlers: handlers };
+}
+// Builds the floating tooltip; clamps horizontally so it never clips at the edges.
+function chartTip(leftPct, lines) {
+  const L = Math.max(11, Math.min(89, leftPct));
+  return h('div', { className: 'chart-tip', style: { left: L + '%' } },
+    lines.map(function(ln, i){ return h('div', { key: i, className: i === 0 ? 'chart-tip-title' : 'chart-tip-row' }, ln); })
+  );
+}
+
 // ── MPG LINE CHART (per-fill + rolling 10-tank average) ─────────────────────────
 function MpgChart(props) {
   const data = props.entries.slice()
@@ -307,7 +343,9 @@ function MpgChart(props) {
   const avgY = yOf(avg);
   // legend, bottom-right (only meaningful once the rolling line is drawn)
   const legX = W - 132, legY1 = H - PB - 16, legY2 = H - PB - 4;
-  return h('div', { className: 'chart-wrap' },
+  const cursor = useChartCursor(pts.map(function(p){ return p.x; }), W);
+  const cur = (cursor.activeIndex != null && cursor.activeIndex < pts.length) ? cursor.activeIndex : null;
+  return h('div', Object.assign({ className: 'chart-wrap', ref: cursor.wrapRef }, cursor.handlers),
     h('svg', { className: 'chart', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
       h('defs', null,
         h('linearGradient', { id: 'mpgGrad', x1: '0', y1: '0', x2: '0', y2: '1' },
@@ -331,8 +369,19 @@ function MpgChart(props) {
         h('text', { x: legX + 21, y: legY1 + 3, fill: '#7a8299', fontSize: '9', fontFamily: 'IBM Plex Mono' }, 'Per fill-up'),
         h('line', { x1: legX, y1: legY2, x2: legX + 16, y2: legY2, stroke: '#f5a623', strokeWidth: '2.5' }),
         h('text', { x: legX + 21, y: legY2 + 3, fill: '#7a8299', fontSize: '9', fontFamily: 'IBM Plex Mono' }, '10-tank avg')
+      ) : null,
+      // crosshair at the active point
+      cur != null ? h('g', null,
+        h('line', { x1: pts[cur].x, y1: PT, x2: pts[cur].x, y2: H - PB, stroke: '#7a8299', strokeWidth: '1', strokeOpacity: '0.5' }),
+        showRolling ? h('circle', { cx: rollPts[cur].x, cy: rollPts[cur].y, r: '3.5', fill: '#f5a623', stroke: '#0f1117', strokeWidth: '1' }) : null,
+        h('circle', { cx: pts[cur].x, cy: pts[cur].y, r: '3', fill: '#f5a623', fillOpacity: '0.9', stroke: '#0f1117', strokeWidth: '1' })
       ) : null
-    )
+    ),
+    cur != null ? chartTip((pts[cur].x / W) * 100, [
+      fmtDate(data[cur].date),
+      h('span', null, h('span', { className: 'tip-k' }, 'fill '), fmt(mpgs[cur]) + ' mpg'),
+      showRolling ? h('span', null, h('span', { className: 'tip-k' }, '10-tank '), fmt(rolling[cur]) + ' mpg') : null
+    ]) : null
   );
 }
 
@@ -343,19 +392,27 @@ function BarChart(props) {
   const max = Math.max.apply(null, rows.map(function(r){return r.value;})) || 1;
   const W = 600, H = 130, PB = 22, PT = 8, gap = 6;
   const bw = (W - gap * (rows.length - 1)) / rows.length;
-  return h('div', { className: 'chart-wrap', style: { height: 150 } },
+  const centers = rows.map(function(r, i){ return i * (bw + gap) + bw / 2; });
+  const cursor = useChartCursor(centers, W);
+  const cur = (cursor.activeIndex != null && cursor.activeIndex < rows.length) ? cursor.activeIndex : null;
+  return h('div', Object.assign({ className: 'chart-wrap', style: { height: 150 }, ref: cursor.wrapRef }, cursor.handlers),
     h('svg', { className: 'chart', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
+      cur != null ? h('rect', { x: cur * (bw + gap) - 2, y: PT, width: bw + 4, height: H - PB - PT, rx: 3, fill: 'var(--accent)', opacity: 0.1 }) : null,
       rows.map(function(r, i){
         const bh = ((H - PB - PT) * r.value) / max;
         const x = i * (bw + gap);
         const y = H - PB - bh;
         return h('g', { key: r.key },
-          h('rect', { x: x, y: y, width: bw, height: Math.max(bh, 0), rx: 3, fill: '#f5a623', opacity: 0.85 }),
+          h('rect', { x: x, y: y, width: bw, height: Math.max(bh, 0), rx: 3, fill: '#f5a623', opacity: cur === i ? 1 : 0.85 }),
           h('text', { x: x + bw/2, y: y - 3, textAnchor: 'middle', fill: '#e8eaf0', fontSize: '11', fontFamily: 'IBM Plex Mono' }, '$' + Math.round(r.value)),
           h('text', { x: x + bw/2, y: H - 6, textAnchor: 'middle', fill: '#7a8299', fontSize: '10', fontFamily: 'IBM Plex Mono' }, r.label.split(' ')[0])
         );
       })
-    )
+    ),
+    cur != null ? chartTip((centers[cur] / W) * 100, [
+      rows[cur].label,
+      h('span', null, h('span', { className: 'tip-k' }, 'spent '), '$' + fmt(rows[cur].value))
+    ]) : null
   );
 }
 
@@ -380,7 +437,9 @@ function CostPerMileChart(props) {
   const areaD = lineD + ' L' + pts[pts.length-1].x.toFixed(2) + ',' + (H-PB) + ' L' + pts[0].x.toFixed(2) + ',' + (H-PB) + ' Z';
   const avg = vals.reduce(function(a,b){return a+b;},0) / vals.length;
   const avgY = yOf(avg);
-  return h('div', { className: 'chart-wrap' },
+  const cursor = useChartCursor(pts.map(function(p){ return p.x; }), W);
+  const cur = (cursor.activeIndex != null && cursor.activeIndex < pts.length) ? cursor.activeIndex : null;
+  return h('div', Object.assign({ className: 'chart-wrap', ref: cursor.wrapRef }, cursor.handlers),
     h('svg', { className: 'chart', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
       h('defs', null,
         h('linearGradient', { id: 'cpmGrad', x1: '0', y1: '0', x2: '0', y2: '1' },
@@ -397,8 +456,16 @@ function CostPerMileChart(props) {
       pts.map(function(p, i){ return h('circle', { key: i, cx: p.x, cy: p.y, r: '2.5', fill: '#3ecfcf' }); }),
       h('text', { x: W-PR, y: avgY - 4, textAnchor: 'end', fill: '#3ecfcf', fontSize: '10', fontFamily: 'IBM Plex Mono' }, 'avg $' + avg.toFixed(3) + '/mi'),
       h('text', { x: pts[0].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[0].d.date)),
-      h('text', { x: pts[pts.length-1].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[pts.length-1].d.date))
-    )
+      h('text', { x: pts[pts.length-1].x, y: H, textAnchor: 'middle', fill: '#4a5268', fontSize: '10', fontFamily: 'IBM Plex Mono' }, fmtDate(pts[pts.length-1].d.date)),
+      cur != null ? h('g', null,
+        h('line', { x1: pts[cur].x, y1: PT, x2: pts[cur].x, y2: H - PB, stroke: '#7a8299', strokeWidth: '1', strokeOpacity: '0.5' }),
+        h('circle', { cx: pts[cur].x, cy: pts[cur].y, r: '3.5', fill: '#3ecfcf', stroke: '#0f1117', strokeWidth: '1' })
+      ) : null
+    ),
+    cur != null ? chartTip((pts[cur].x / W) * 100, [
+      fmtDate(data[cur].date),
+      h('span', null, h('span', { className: 'tip-k' }, 'cost '), '$' + data[cur].cpm.toFixed(3) + '/mi')
+    ]) : null
   );
 }
 
@@ -411,9 +478,13 @@ function StackedCostChart(props) {
   const W = 600, H = 150, PB = 22, PT = 10, gap = 6;
   const bw = (W - gap * (rows.length - 1)) / rows.length;
   function segH(v){ return ((H - PB - PT) * v) / max; }
+  const centers = rows.map(function(r, i){ return i * (bw + gap) + bw / 2; });
+  const cursor = useChartCursor(centers, W);
+  const cur = (cursor.activeIndex != null && cursor.activeIndex < rows.length) ? cursor.activeIndex : null;
   return h('div', null,
-    h('div', { className: 'chart-wrap', style: { height: 170 } },
+    h('div', Object.assign({ className: 'chart-wrap', style: { height: 170 }, ref: cursor.wrapRef }, cursor.handlers),
       h('svg', { className: 'chart', viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none' },
+        cur != null ? h('rect', { x: cur * (bw + gap) - 2, y: PT, width: bw + 4, height: H - PB - PT, rx: 3, fill: 'var(--accent)', opacity: 0.1 }) : null,
         rows.map(function(r, i){
           const x = i * (bw + gap);
           const hFixed = segH(r.fixed), hMaint = segH(r.maint), hFuel = segH(r.fuel);
@@ -422,14 +493,21 @@ function StackedCostChart(props) {
           const yFuel = yMaint - hFuel;
           const total = r.fixed + r.maint + r.fuel;
           return h('g', { key: r.key },
-            h('rect', { x: x, y: yFixed, width: bw, height: Math.max(hFixed, 0), fill: '#7a8299', opacity: 0.9 }),
-            h('rect', { x: x, y: yMaint, width: bw, height: Math.max(hMaint, 0), fill: '#3ecfcf', opacity: 0.9 }),
-            h('rect', { x: x, y: yFuel, width: bw, height: Math.max(hFuel, 0), rx: 2, fill: '#f5a623', opacity: 0.9 }),
+            h('rect', { x: x, y: yFixed, width: bw, height: Math.max(hFixed, 0), fill: '#7a8299', opacity: cur === i ? 1 : 0.9 }),
+            h('rect', { x: x, y: yMaint, width: bw, height: Math.max(hMaint, 0), fill: '#3ecfcf', opacity: cur === i ? 1 : 0.9 }),
+            h('rect', { x: x, y: yFuel, width: bw, height: Math.max(hFuel, 0), rx: 2, fill: '#f5a623', opacity: cur === i ? 1 : 0.9 }),
             h('text', { x: x + bw/2, y: yFuel - 3, textAnchor: 'middle', fill: '#e8eaf0', fontSize: '10', fontFamily: 'IBM Plex Mono' }, '$' + Math.round(total)),
             h('text', { x: x + bw/2, y: H - 6, textAnchor: 'middle', fill: '#7a8299', fontSize: '10', fontFamily: 'IBM Plex Mono' }, r.label.split(' ')[0])
           );
         })
-      )
+      ),
+      cur != null ? chartTip((centers[cur] / W) * 100, [
+        rows[cur].label,
+        h('span', null, h('span', { className: 'tip-k' }, 'fixed '), '$' + fmt(rows[cur].fixed)),
+        h('span', null, h('span', { className: 'tip-k' }, 'maint '), '$' + fmt(rows[cur].maint)),
+        h('span', null, h('span', { className: 'tip-k' }, 'fuel '), '$' + fmt(rows[cur].fuel)),
+        h('span', null, h('span', { className: 'tip-k' }, 'total '), '$' + fmt(rows[cur].fixed + rows[cur].maint + rows[cur].fuel))
+      ]) : null
     ),
     h('div', { style: { display: 'flex', gap: 14, marginTop: 8, fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-muted)', flexWrap: 'wrap' } },
       [['Fixed','#7a8299'],['Maintenance','#3ecfcf'],['Fuel','#f5a623']].map(function(p){

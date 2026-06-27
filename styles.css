@@ -40,7 +40,10 @@ main { flex:1; padding:16px; max-width:700px; margin:0 auto; width:100%; padding
 .stat-value.mpg-mid { color:var(--accent); }
 .stat-value.mpg-lo { color:var(--red); }
 .stat-unit { font-size:11px; color:var(--text-dim); margin-top:2px; }
-.chart-wrap { position:relative; height:140px; }
+.chart-wrap { position:relative; height:140px; touch-action:none; }
+.chart-tip { position:absolute; top:4px; transform:translateX(-50%); background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-family:var(--mono); font-size:11px; color:var(--text); line-height:1.45; pointer-events:none; z-index:5; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,0.35); }
+.chart-tip-title { color:var(--text-muted); font-size:10px; margin-bottom:2px; }
+.chart-tip .tip-k { color:var(--text-muted); }
 svg.chart { width:100%; height:100%; overflow:visible; }
 .chart-empty { display:flex; align-items:center; justify-content:center; height:140px; color:var(--text-dim); font-size:13px; font-family:var(--mono); }
 .history-table { width:100%; border-collapse:collapse; font-size:12px; }
