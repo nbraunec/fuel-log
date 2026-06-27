@@ -312,11 +312,31 @@ function chartTip(leftPct, lines) {
   );
 }
 
+// ── CHART RANGE (time window shared across Dashboard + Monthly charts) ───────────
+const RANGE_OPTS = [['3m','3M'],['6m','6M'],['12m','12M'],['all','All']];
+// Returns the inclusive cutoff date (YYYY-MM-DD) for a range, or null for 'all'.
+function rangeCutoff(range) {
+  if (!range || range === 'all') return null;
+  const months = range === '3m' ? 3 : range === '12m' ? 12 : 6;
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  return d.toISOString().slice(0, 10);
+}
+function RangeToggle(props) {
+  return h('div', { className: 'toggle-row range-toggle' },
+    RANGE_OPTS.map(function(o){
+      return h('button', { key: o[0], type: 'button',
+        className: 'toggle-btn' + (props.range === o[0] ? ' active' : ''),
+        onClick: function(){ props.onChange(o[0]); } }, o[1]);
+    })
+  );
+}
+
 // ── MPG LINE CHART (per-fill + rolling 10-tank average) ─────────────────────────
 function MpgChart(props) {
   const data = props.entries.slice()
     .filter(function(e){ return e.mpg != null; })
-    .sort(function(a,b){return a.date.localeCompare(b.date);}).slice(-20);
+    .sort(function(a,b){return a.date.localeCompare(b.date);});
   if (data.length < 2) return h('div', { className: 'chart-empty' }, 'Add more full fill-ups to see trend');
   const mpgs = data.map(function(e){return e.mpg;});
   // rolling average: mean of this entry + up to 9 preceding full fill-ups
@@ -421,7 +441,7 @@ function CostPerMileChart(props) {
   const data = props.entries.slice()
     .filter(function(e){ return e.totalPrice != null && e.tripMiles != null && e.tripMiles > 0; })
     .map(function(e){ return { date: e.date, cpm: parseFloat((e.totalPrice / e.tripMiles).toFixed(3)) }; })
-    .sort(function(a,b){return a.date.localeCompare(b.date);}).slice(-20);
+    .sort(function(a,b){return a.date.localeCompare(b.date);});
   if (data.length < 2) return h('div', { className: 'chart-empty' }, 'Add more fill-ups to see cost trend');
   const vals = data.map(function(d){return d.cpm;});
   let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
@@ -651,6 +671,8 @@ function AddEntryForm(props) {
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
 function Dashboard(props) {
   const ve = props.entries.filter(function(e){return e.vehicle === props.vehicle;});
+  const cutoff = rangeCutoff(props.range);
+  const mpgChartEntries = cutoff ? ve.filter(function(e){ return e.date >= cutoff; }) : ve;
   const sorted = ve.slice().sort(function(a,b){return b.date.localeCompare(a.date);});
   const mpgs = ve.map(function(e){return e.mpg;}).filter(function(m){return m != null;});
   const avgMpg = mpgs.length ? mpgs.reduce(function(a,b){return a+b;},0)/mpgs.length : null;
@@ -773,7 +795,8 @@ function Dashboard(props) {
     ),
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'MPG Trend'),
-      h(MpgChart, { entries: ve })
+      h(RangeToggle, { range: props.range, onChange: props.onRangeChange }),
+      h(MpgChart, { entries: mpgChartEntries })
     ),
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Recent Fill-Ups'),
@@ -814,7 +837,11 @@ function Monthly(props) {
     groups[k].fills += 1;
   });
   const months = Object.keys(groups).sort().map(function(k){ return groups[k]; });
-  const recentMonths = months.slice(-6).map(function(m){
+  const cutoff = rangeCutoff(props.range);
+  const cutoffMonth = cutoff ? cutoff.slice(0, 7) : null;
+  const windowMonths = cutoffMonth ? months.filter(function(m){ return m.key >= cutoffMonth; }) : months;
+  const cpmEntries = cutoff ? ve.filter(function(e){ return e.date >= cutoff; }) : ve;
+  const recentMonths = windowMonths.map(function(m){
     return { key: m.key, label: monthLabel(m.key), value: m.spent };
   });
   if (months.length === 0) {
@@ -876,21 +903,22 @@ function Monthly(props) {
     const k = monthKey(m.date); if (!k) return;
     maintByMonth[k] = (maintByMonth[k] || 0) + (m.cost || 0);
   });
-  const stackedRows = months.slice(-6).map(function(m){
+  const stackedRows = windowMonths.map(function(m){
     return { key: m.key, label: monthLabel(m.key), fixed: fixedMonthly, maint: maintByMonth[m.key] || 0, fuel: m.spent };
   });
   return h(React.Fragment, null,
+    h(RangeToggle, { range: props.range, onChange: props.onRangeChange }),
     h('div', { className: 'card' },
-      h('div', { className: 'card-title' }, 'Spend / Month (last 6) — ' + props.vehicle),
+      h('div', { className: 'card-title' }, 'Spend / Month — ' + props.vehicle),
       h(BarChart, { rows: recentMonths })
     ),
     fixedCosts.length > 0 ? h('div', { className: 'card' },
-      h('div', { className: 'card-title' }, 'Total Cost / Month (last 6) — ' + props.vehicle),
+      h('div', { className: 'card-title' }, 'Total Cost / Month — ' + props.vehicle),
       h(StackedCostChart, { rows: stackedRows })
     ) : null,
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'Cost / Mile Trend — ' + props.vehicle),
-      h(CostPerMileChart, { entries: ve })
+      h(CostPerMileChart, { entries: cpmEntries })
     ),
     h('div', { className: 'card' },
       h('div', { className: 'card-title' }, 'MPG by Fuel Type'),
@@ -1493,6 +1521,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState(function(){ return loadPrefs().theme || 'midnight'; });
   const [lastDriver, setLastDriver] = useState(function(){ return loadPrefs().lastDriver || ''; });
+  const [chartRange, setChartRange] = useState(function(){ return loadPrefs().chartRange || '6m'; });
   const [fixedCosts, setFixedCosts] = useState(function(){ return loadJSON(FIXED_KEY); });
   const [maintenanceLogs, setMaintenanceLogs] = useState(function(){ return loadJSON(MAINT_KEY); });
   const [dismissedReminders, setDismissedReminders] = useState(function(){ return new Set(); });
@@ -1502,8 +1531,8 @@ function App() {
   useEffect(function(){ entriesRef.current = entries; }, [entries]);
 
   useEffect(function(){
-    savePrefs({ vehicles: vehicles, activeVehicle: activeVehicle, theme: theme, lastDriver: lastDriver });
-  }, [vehicles, activeVehicle, theme, lastDriver]);
+    savePrefs({ vehicles: vehicles, activeVehicle: activeVehicle, theme: theme, lastDriver: lastDriver, chartRange: chartRange });
+  }, [vehicles, activeVehicle, theme, lastDriver, chartRange]);
 
   // Apply the selected color theme to the document root
   useEffect(function(){
@@ -1792,9 +1821,9 @@ function App() {
         }),
         h('div', { className: 'vehicle-chip add-btn', onClick: function(){ setShowAddVehicle(true); } }, '+ Add vehicle')
       ),
-      tab === 'dashboard' ? h(Dashboard, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint, dismissed: dismissedReminders, onDismiss: handleDismissReminder }) : null,
+      tab === 'dashboard' ? h(Dashboard, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint, dismissed: dismissedReminders, onDismiss: handleDismissReminder, range: chartRange, onRangeChange: setChartRange }) : null,
       tab === 'add' ? h(AddEntryForm, { vehicle: activeVehicle, drivers: knownDrivers, defaultDriver: lastDriver, onDriverUsed: setLastDriver, onAdd: function(e){ handleAddEntry(e); setTab('dashboard'); } }) : null,
-      tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint }) : null,
+      tab === 'monthly' ? h(Monthly, { entries: entriesWithMpg, vehicle: activeVehicle, fixedCosts: vehicleFixed, maintenanceLogs: vehicleMaint, range: chartRange, onRangeChange: setChartRange }) : null,
       tab === 'costs' ? h(CostsView, { vehicle: activeVehicle, fixedCosts: vehicleFixed, onAdd: handleAddFixedCost, onDelete: handleDeleteFixedCost }) : null,
       tab === 'maintenance' ? h(MaintenanceView, { vehicle: activeVehicle, maintenanceLogs: vehicleMaint, latestOdo: vehicleLatestOdo, onAdd: handleAddMaintenance, onDelete: handleDeleteMaintenance }) : null,
       tab === 'history' ? h(History, { entries: entriesWithMpg, vehicle: activeVehicle, onDelete: handleDeleteEntry }) : null,
