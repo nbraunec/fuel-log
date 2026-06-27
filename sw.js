@@ -1,5 +1,5 @@
 // Fuel Log service worker — offline caching
-const CACHE = 'fuel-log-v9';
+const CACHE = 'fuel-log-v10';
 
 // Local app shell + the CDN React files (cached on first fetch).
 const PRECACHE = [
@@ -38,23 +38,47 @@ self.addEventListener('activate', function (event) {
   );
 });
 
-// Fetch: cache-first, fall back to network, then update cache.
+// Network-first for our own app shell (HTML/CSS/JS/manifest) so every deploy
+// shows up on the next normal load — no manual cache-clearing needed. Falls
+// back to cache when offline. Cross-origin libs (React, Supabase, Leaflet,
+// fonts, map tiles) stay cache-first since they're versioned and stable.
+function networkFirst(request) {
+  return fetch(request).then(function (response) {
+    if (response && response.status === 200) {
+      var copy = response.clone();
+      caches.open(CACHE).then(function (cache) { cache.put(request, copy); });
+    }
+    return response;
+  }).catch(function () {
+    return caches.match(request).then(function (cached) {
+      if (cached) return cached;
+      if (request.mode === 'navigate') return caches.match('./index.html');
+    });
+  });
+}
+
+function cacheFirst(request) {
+  return caches.match(request).then(function (cached) {
+    if (cached) return cached;
+    return fetch(request).then(function (response) {
+      if (response && (response.status === 200 || response.type === 'opaque')) {
+        var copy = response.clone();
+        caches.open(CACHE).then(function (cache) { cache.put(request, copy); });
+      }
+      return response;
+    }).catch(function () {
+      if (request.mode === 'navigate') return caches.match('./index.html');
+    });
+  });
+}
+
 self.addEventListener('fetch', function (event) {
   if (event.request.method !== 'GET') return;
-  event.respondWith(
-    caches.match(event.request).then(function (cached) {
-      if (cached) return cached;
-      return fetch(event.request).then(function (response) {
-        // Cache successful same-origin and CDN responses for next time.
-        if (response && (response.status === 200 || response.type === 'opaque')) {
-          var copy = response.clone();
-          caches.open(CACHE).then(function (cache) { cache.put(event.request, copy); });
-        }
-        return response;
-      }).catch(function () {
-        // Offline and not cached — for navigations, serve the app shell.
-        if (event.request.mode === 'navigate') return caches.match('./index.html');
-      });
-    })
-  );
+  var url = new URL(event.request.url);
+  // Same-origin = our app shell → network-first; everything else → cache-first.
+  if (url.origin === self.location.origin) {
+    event.respondWith(networkFirst(event.request));
+  } else {
+    event.respondWith(cacheFirst(event.request));
+  }
 });
